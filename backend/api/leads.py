@@ -5,7 +5,7 @@ from typing import Optional
 
 from db import get_db
 from config import get_settings
-from services.ghl import get_conversations, add_contact_note
+from services.ghl import get_conversations, get_all_messages, add_contact_note
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])
 
@@ -141,6 +141,20 @@ async def update_lead_form_data(lead_id: str, body: dict):
     await recalculate_estimate_for_lead(lead_id, lead_data)
 
     return await get_lead(lead_id)
+
+
+@router.get("/{lead_id}/messages")
+async def get_lead_messages(lead_id: str):
+    """Return full GHL SMS conversation thread for a lead (inbound + outbound, oldest first)."""
+    db = get_db()
+    lead_res = db.table("leads").select("ghl_contact_id").eq("id", lead_id).single().execute()
+    if not lead_res.data:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    contact_id = lead_res.data.get("ghl_contact_id")
+    if not contact_id:
+        return {"messages": []}
+    msgs = get_all_messages(contact_id)
+    return {"messages": msgs}
 
 
 @router.post("/archive-all")

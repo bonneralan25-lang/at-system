@@ -53,6 +53,13 @@ async def approve_estimate(estimate_id: str):
     estimate = res.data
     lead = estimate.get("lead") or {}
 
+    # Guardrail: VA may only send estimate after customer has responded
+    if not lead.get("customer_responded"):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot send estimate before customer has responded"
+        )
+
     now = datetime.now(timezone.utc).isoformat()
     db.table("estimates").update({
         "status": "approved",

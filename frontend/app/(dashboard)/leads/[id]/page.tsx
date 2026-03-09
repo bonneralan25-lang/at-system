@@ -3,14 +3,18 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { api, type LeadDetail } from "@/lib/api";
+import { api, type LeadDetail, type GHLMessage } from "@/lib/api";
 import { formatDate, formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, MapPin, ExternalLink, Phone, Mail, User, CheckCircle2, MessageSquare, Tag, Calculator, RefreshCw } from "lucide-react";
+import {
+  ArrowLeft, MapPin, ExternalLink, Phone, Mail, User,
+  CheckCircle2, MessageSquare, Tag, Calculator, RefreshCw,
+  Send, AlertTriangle,
+} from "lucide-react";
 
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || "";
 
@@ -44,7 +48,7 @@ const FENCE_SIDES = {
 const APPROVAL_CONFIG = {
   green: { label: "Ready to Send", classes: "bg-green-50 border-green-300 text-green-800", dot: "bg-green-500" },
   yellow: { label: "Add-ons Pending", classes: "bg-yellow-50 border-yellow-300 text-yellow-800", dot: "bg-yellow-500" },
-  red: { label: "Needs Review", classes: "bg-red-50 border-red-300 text-red-800", dot: "bg-red-500" },
+  red: { label: "Owner Review Required", classes: "bg-red-50 border-red-300 text-red-800", dot: "bg-red-500" },
 } as const;
 
 const selectCls = "w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring";
@@ -56,7 +60,6 @@ export default function LeadDetailPage() {
   const [vaNotes, setVaNotes] = useState("");
   const [savingNotes, setSavingNotes] = useState(false);
   const [checkingResponse, setCheckingResponse] = useState(false);
-  const [responseResult, setResponseResult] = useState<string | null>(null);
 
   // Estimate inputs state
   const [linearFeet, setLinearFeet] = useState("");
@@ -71,6 +74,16 @@ export default function LeadDetailPage() {
   const [savingEstimate, setSavingEstimate] = useState(false);
   const [additionalServicesSent, setAdditionalServicesSent] = useState(false);
   const [markingAddons, setMarkingAddons] = useState(false);
+
+  // Inline approve state
+  const [approvingEstimate, setApprovingEstimate] = useState(false);
+  const [estimateSent, setEstimateSent] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
+
+  // GHL Messages state
+  const [messages, setMessages] = useState<GHLMessage[]>([]);
+  const [messagesLoaded, setMessagesLoaded] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
 
   useEffect(() => {
     api.getLead(id).then((data) => {
@@ -90,6 +103,9 @@ export default function LeadDetailPage() {
       else if (typeof rawSides === "string" && rawSides) setFenceSides(rawSides.split(",").map((s: string) => s.trim()));
       else setFenceSides([]);
       setAdditionalServicesSent(data.estimate?.additional_services_sent ?? false);
+      if (data.status === "sent" || data.estimate?.status === "approved") {
+        setEstimateSent(true);
+      }
     }).catch(console.error).finally(() => setLoading(false));
   }, [id]);
 
@@ -97,6 +113,54 @@ export default function LeadDetailPage() {
     setFenceSides((prev) =>
       prev.includes(side) ? prev.filter((s) => s !== side) : [...prev, side]
     );
+  };
+
+  const handleLoadMessages = async (refresh = false) => {
+    if (!lead) return;
+    if (messagesLoaded && !refresh) return;
+    setLoadingMessages(true);
+    try {
+      const result = await api.getLeadMessages(lead.id);
+      setMessages(result.messages || []);
+      setMessagesLoaded(true);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const handleCheckResponse = async () => {
+    if (!lead) return;
+    setCheckingResponse(true);
+    try {
+      const result = await api.checkResponse(lead.id);
+      if (result.responded) {
+        setLead({ ...lead, customer_responded: true, customer_response_text: result.latest || "" });
+      }
+      // Always refresh messages after checking
+      const msgResult = await api.getLeadMessages(lead.id);
+      setMessages(msgResult.messages || []);
+      setMessagesLoaded(true);
+    } catch (e) {
+      console.error(e);
+    }
+    setCheckingResponse(false);
+  };
+
+  const handleApproveEstimate = async () => {
+    if (!lead?.estimate) return;
+    setApprovingEstimate(true);
+    setApproveError(null);
+    try {
+      await api.approveEstimate(lead.estimate.id);
+      setEstimateSent(true);
+      setLead({ ...lead, status: "sent" });
+    } catch (e: unknown) {
+      setApproveError(e instanceof Error ? e.message : "Failed to send estimate");
+    } finally {
+      setApprovingEstimate(false);
+    }
   };
 
   const handleMarkAddonsSent = async () => {
@@ -124,24 +188,6 @@ export default function LeadDetailPage() {
     setSavingNotes(false);
   };
 
-  const handleCheckResponse = async () => {
-    if (!lead) return;
-    setCheckingResponse(true);
-    try {
-      const result = await api.checkResponse(lead.id);
-      if (result.responded) {
-        setResponseResult(result.latest || "Customer responded");
-        setLead({ ...lead, customer_responded: true, customer_response_text: result.latest || "" });
-      } else {
-        setResponseResult("No response yet");
-      }
-    } catch (e) {
-      console.error(e);
-      setResponseResult("Failed to check");
-    }
-    setCheckingResponse(false);
-  };
-
   const handleSaveEstimateInputs = async () => {
     if (!lead) return;
     setSavingEstimate(true);
@@ -160,6 +206,8 @@ export default function LeadDetailPage() {
 
       const updated = await api.updateLeadFormData(lead.id, formData);
       setLead(updated);
+      setEstimateSent(false); // Reset sent state after recalculation
+      setApproveError(null);
     } catch (e) {
       console.error(e);
     }
@@ -189,6 +237,11 @@ export default function LeadDetailPage() {
   const approvalStatus = (est?.inputs?._approval_status as string) || "";
   const approvalReason = (est?.inputs?._approval_reason as string) || "";
   const approvalCfg = APPROVAL_CONFIG[approvalStatus as keyof typeof APPROVAL_CONFIG];
+  const canApproveInline = (approvalStatus === "green" || approvalStatus === "yellow") && est?.status === "pending";
+  const isRed = approvalStatus === "red";
+
+  const inboundMessages = messages.filter((m) => m.direction === "inbound");
+  const customerRespondedFromMessages = inboundMessages.length > 0;
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -309,6 +362,160 @@ export default function LeadDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* GHL Messages — shown BEFORE estimate result so VA has context */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <MessageSquare className="h-4 w-4" /> Messages
+              {(lead.customer_responded || customerRespondedFromMessages) && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                  <CheckCircle2 className="h-3 w-3" /> Customer replied
+                </span>
+              )}
+            </CardTitle>
+            <div className="flex gap-2">
+              {!messagesLoaded ? (
+                <Button size="sm" variant="outline" onClick={() => handleLoadMessages()} disabled={loadingMessages}>
+                  {loadingMessages ? "Loading..." : "Load Messages"}
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" onClick={() => handleLoadMessages(true)} disabled={loadingMessages}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${loadingMessages ? "animate-spin" : ""}`} />
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={handleCheckResponse} disabled={checkingResponse}>
+                {checkingResponse ? "Checking..." : "Check for Response"}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {!messagesLoaded ? (
+            <p className="text-sm text-muted-foreground">
+              {lead.customer_responded
+                ? `Customer replied: "${lead.customer_response_text}" — click Load Messages to see full thread.`
+                : "Click 'Load Messages' to see the SMS conversation, or 'Check for Response' to detect a new reply."}
+            </p>
+          ) : messages.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No messages yet for this contact.</p>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-xs lg:max-w-sm px-3 py-2 rounded-2xl text-sm ${
+                    msg.direction === "outbound"
+                      ? "bg-blue-600 text-white rounded-br-none"
+                      : "bg-muted text-foreground rounded-bl-none"
+                  }`}>
+                    <p>{msg.body}</p>
+                    {msg.dateAdded && (
+                      <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-blue-200" : "text-muted-foreground"}`}>
+                        {new Date(msg.dateAdded).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Estimate Result */}
+      {est && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">Estimate</CardTitle>
+              <Badge variant={
+                est.status === "approved" ? "success" :
+                est.status === "rejected" ? "destructive" : "pending"
+              }>
+                {estimateSent ? "sent" : est.status}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {approvalCfg && (
+              <div className={`flex items-start gap-3 border rounded-lg px-3 py-2 ${approvalCfg.classes}`}>
+                <span className={`mt-0.5 h-2.5 w-2.5 rounded-full flex-shrink-0 ${approvalCfg.dot}`} />
+                <div>
+                  <p className="font-semibold text-sm">{approvalCfg.label}</p>
+                  {approvalReason && <p className="text-xs mt-0.5 opacity-80">{approvalReason}</p>}
+                  {isRed && (
+                    <p className="text-xs mt-1 opacity-70">VA action: None needed — Alan will review this estimate.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <p className="text-3xl font-bold">
+                {est.estimate_low > 0
+                  ? `${formatCurrency(est.estimate_low)}–${formatCurrency(est.estimate_high)}`
+                  : "—"}
+              </p>
+
+              {/* Action area — differs by status */}
+              {estimateSent ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-700">
+                  <CheckCircle2 className="h-4 w-4" /> Sent to customer
+                </span>
+              ) : isRed ? (
+                <Button variant="outline" asChild>
+                  <Link href={`/estimates/${est.id}`}>View Estimate →</Link>
+                </Button>
+              ) : canApproveInline ? (
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    className="gap-2 bg-green-600 hover:bg-green-700"
+                    onClick={handleApproveEstimate}
+                    disabled={approvingEstimate || (!lead.customer_responded && !customerRespondedFromMessages)}
+                  >
+                    <Send className="h-4 w-4" />
+                    {approvingEstimate ? "Sending..." : "Approve & Send to Client"}
+                  </Button>
+                  {!lead.customer_responded && !customerRespondedFromMessages && (
+                    <p className="text-xs text-muted-foreground">Waiting for customer reply first</p>
+                  )}
+                </div>
+              ) : (
+                <Button asChild>
+                  <Link href={`/estimates/${est.id}`}>View Estimate</Link>
+                </Button>
+              )}
+            </div>
+
+            {approveError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                {approveError}
+              </div>
+            )}
+
+            {/* Yellow: add-ons tracking */}
+            {approvalStatus === "yellow" && (
+              <div className="flex items-center justify-between pt-1 border-t">
+                <p className="text-sm text-muted-foreground">Additional services pricing</p>
+                {additionalServicesSent ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                    <CheckCircle2 className="h-3 w-3" /> Sent Additional Proposal
+                  </span>
+                ) : (
+                  <Button size="sm" variant="outline" className="text-xs h-7 px-2"
+                    disabled={markingAddons}
+                    onClick={handleMarkAddonsSent}
+                  >
+                    {markingAddons ? "Saving…" : "Mark Add-ons Sent"}
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Estimate Inputs — VA fills this in */}
       <Card>
@@ -435,96 +642,6 @@ export default function LeadDetailPage() {
             <RefreshCw className={`h-4 w-4 ${savingEstimate ? "animate-spin" : ""}`} />
             {savingEstimate ? "Recalculating..." : "Save & Recalculate Estimate"}
           </Button>
-        </CardContent>
-      </Card>
-
-      {/* Estimate Result */}
-      {est && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">Estimate</CardTitle>
-              <Badge variant={
-                est.status === "approved" ? "success" :
-                est.status === "rejected" ? "destructive" : "pending"
-              }>
-                {est.status}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {approvalCfg && (
-              <div className={`flex items-start gap-3 border rounded-lg px-3 py-2 ${approvalCfg.classes}`}>
-                <span className={`mt-0.5 h-2.5 w-2.5 rounded-full flex-shrink-0 ${approvalCfg.dot}`} />
-                <div>
-                  <p className="font-semibold text-sm">{approvalCfg.label}</p>
-                  {approvalReason && <p className="text-xs mt-0.5 opacity-80">{approvalReason}</p>}
-                </div>
-              </div>
-            )}
-            <div className="flex items-center justify-between">
-              <p className="text-3xl font-bold">
-                {est.estimate_low > 0
-                  ? `${formatCurrency(est.estimate_low)}–${formatCurrency(est.estimate_high)}`
-                  : "—"}
-              </p>
-              <Button asChild>
-                <Link href={`/estimates/${est.id}`}>
-                  {est.status === "pending" ? "Review & Send" : "View Estimate"}
-                </Link>
-              </Button>
-            </div>
-            {approvalStatus === "yellow" && (
-              <div className="flex items-center justify-between pt-1 border-t">
-                <p className="text-sm text-muted-foreground">Additional services pricing</p>
-                {additionalServicesSent ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                    <CheckCircle2 className="h-3 w-3" /> Sent Additional Proposal
-                  </span>
-                ) : (
-                  <Button size="sm" variant="outline" className="text-xs h-7 px-2"
-                    disabled={markingAddons}
-                    onClick={handleMarkAddonsSent}
-                  >
-                    {markingAddons ? "Saving…" : "Mark Add-ons Sent"}
-                  </Button>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Customer Response */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <MessageSquare className="h-4 w-4" /> Customer Response
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {lead.customer_responded ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm text-green-700">
-                <CheckCircle2 className="h-4 w-4" /> Customer has responded
-              </div>
-              {lead.customer_response_text && (
-                <div className="p-3 rounded-lg bg-muted text-sm">
-                  &ldquo;{lead.customer_response_text}&rdquo;
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">No response detected yet</p>
-              <Button size="sm" variant="outline" onClick={handleCheckResponse} disabled={checkingResponse}>
-                {checkingResponse ? "Checking..." : "Check for Response"}
-              </Button>
-            </div>
-          )}
-          {responseResult && !lead.customer_responded && (
-            <p className="text-sm text-muted-foreground mt-2">{responseResult}</p>
-          )}
         </CardContent>
       </Card>
 

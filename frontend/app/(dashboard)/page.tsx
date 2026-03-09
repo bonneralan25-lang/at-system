@@ -7,7 +7,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Clock, Users, CheckCircle, TrendingUp, ArrowRight } from "lucide-react";
+import { Clock, Users, CheckCircle, TrendingUp, ArrowRight, Flame } from "lucide-react";
 
 function StatCard({
   title,
@@ -49,15 +49,19 @@ const serviceLabel: Record<string, string> = {
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [pendingEstimates, setPendingEstimates] = useState<Estimate[]>([]);
+  const [hotCount, setHotCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       api.getStats().catch(() => null),
       api.getEstimates("status=pending&limit=5").catch(() => []),
-    ]).then(([s, e]) => {
+      api.getLeads("limit=200").catch(() => []),
+    ]).then(([s, e, l]) => {
       setStats(s as DashboardStats);
       setPendingEstimates(e as Estimate[]);
+      const leads = l as { priority: string; status: string }[];
+      setHotCount(leads.filter((lead) => lead.priority === "HOT" && lead.status !== "sent" && lead.status !== "approved").length);
       setLoading(false);
     });
   }, []);
@@ -68,6 +72,19 @@ export default function DashboardPage() {
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-muted-foreground">Welcome back — here's what needs your attention.</p>
       </div>
+
+      {/* HOT Leads Banner */}
+      {!loading && hotCount > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-orange-50 border border-orange-200 text-orange-800 text-sm font-medium">
+          <Flame className="h-4 w-4 text-orange-500 shrink-0" />
+          <span>
+            {hotCount} urgent lead{hotCount > 1 ? "s" : ""} — ASAP / This week — need immediate attention
+          </span>
+          <Link href="/leads" className="ml-auto text-xs underline underline-offset-2 hover:no-underline">
+            Go to Leads →
+          </Link>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

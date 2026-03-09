@@ -36,6 +36,8 @@ export const api = {
     }),
   archiveAllLeads: () =>
     request<{ status: string; count: number }>("/api/leads/archive-all", { method: "POST" }),
+  getLeadMessages: (leadId: string) =>
+    request<{ messages: GHLMessage[] }>(`/api/leads/${leadId}/messages`),
 
   // Estimates
   getEstimates: (params?: string) =>
@@ -183,6 +185,13 @@ export interface ResponseCheck {
   responded: boolean;
   message_count: number;
   latest?: string;
+}
+
+export interface GHLMessage {
+  direction: "inbound" | "outbound";
+  body: string;
+  dateAdded: string;
+  messageType?: string;
 }
 
 export interface PipelineSyncResult {

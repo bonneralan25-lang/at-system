@@ -186,34 +186,60 @@ def format_estimate_for_client(estimate: dict, service_type: str) -> str:
 
 # ── Conversations (response detection) ───────────────────────────────
 
+def _fetch_messages_for_contact(contact_id: str) -> list[dict]:
+    """Shared helper: fetch all messages from GHL for a contact (any direction)."""
+    r = httpx.get(
+        f"{GHL_BASE}/conversations/search",
+        headers=_headers(),
+        params={"contactId": contact_id},
+        timeout=15,
+    )
+    r.raise_for_status()
+    conversations = r.json().get("conversations", [])
+    if not conversations:
+        return []
+
+    conv_id = conversations[0]["id"]
+
+    r2 = httpx.get(
+        f"{GHL_BASE}/conversations/{conv_id}/messages",
+        headers=_headers(),
+        timeout=15,
+    )
+    r2.raise_for_status()
+    messages_data = r2.json().get("messages", {})
+    if isinstance(messages_data, dict):
+        return messages_data.get("messages", [])
+    return messages_data if isinstance(messages_data, list) else []
+
+
 def get_conversations(contact_id: str) -> list[dict]:
     """Fetch conversation messages for a contact to detect inbound replies."""
     try:
-        r = httpx.get(
-            f"{GHL_BASE}/conversations/search",
-            headers=_headers(),
-            params={"contactId": contact_id},
-            timeout=15,
-        )
-        r.raise_for_status()
-        conversations = r.json().get("conversations", [])
-        if not conversations:
-            return []
-
-        conv_id = conversations[0]["id"]
-
-        r2 = httpx.get(
-            f"{GHL_BASE}/conversations/{conv_id}/messages",
-            headers=_headers(),
-            timeout=15,
-        )
-        r2.raise_for_status()
-        messages_data = r2.json().get("messages", {})
-        if isinstance(messages_data, dict):
-            return messages_data.get("messages", [])
-        return messages_data if isinstance(messages_data, list) else []
+        return _fetch_messages_for_contact(contact_id)
     except Exception as e:
         logger.error(f"GHL get_conversations failed for {contact_id}: {e}")
+        return []
+
+
+def get_all_messages(contact_id: str) -> list[dict]:
+    """Fetch full message thread for a contact (inbound + outbound), oldest first."""
+    try:
+        msgs = _fetch_messages_for_contact(contact_id)
+        # Normalise fields: ensure direction and body are present
+        normalised = []
+        for m in msgs:
+            normalised.append({
+                "direction": m.get("direction", "outbound"),
+                "body": m.get("body") or m.get("message") or "",
+                "dateAdded": m.get("dateAdded") or m.get("createdAt") or m.get("date_added") or "",
+                "messageType": m.get("messageType") or m.get("type") or "SMS",
+            })
+        # Sort oldest → newest
+        normalised.sort(key=lambda m: m["dateAdded"])
+        return normalised
+    except Exception as e:
+        logger.error(f"GHL get_all_messages failed for {contact_id}: {e}")
         return []
 
 
