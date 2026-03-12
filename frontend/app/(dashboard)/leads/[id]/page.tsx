@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { api, type LeadDetail, type GHLMessage } from "@/lib/api";
+import { api, type LeadDetail, type GHLMessage, type Estimate } from "@/lib/api";
 import { formatDate, formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import {
   ArrowLeft, MapPin, ExternalLink, Phone, Mail, User,
   CheckCircle2, MessageSquare, Tag, Calculator, RefreshCw,
-  Send, AlertTriangle,
+  Send, AlertTriangle, History,
 } from "lucide-react";
 
 const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || "";
@@ -38,6 +38,18 @@ const TIMELINE_OPTIONS = [
   "Within 2 weeks",
   "Sometime this month",
   "Just planning ahead",
+];
+
+const TIER_CONFIG = [
+  { key: "essential", label: "Essential" },
+  { key: "signature", label: "Signature" },
+  { key: "legacy", label: "Legacy" },
+];
+
+const CONFIDENCE_OPTIONS = [
+  { label: "I'm confident", value: "100" },
+  { label: "Somewhat confident", value: "80" },
+  { label: "I'm not confident", value: "60" },
 ];
 
 const FENCE_SIDES = {
@@ -68,10 +80,19 @@ export default function LeadDetailPage() {
   const [previouslyStained, setPreviouslyStained] = useState("No");
   const [timeline, setTimeline] = useState("");
   const [additionalServices, setAdditionalServices] = useState("");
+  const [editingAdditionalServices, setEditingAdditionalServices] = useState(false);
   const [zipCode, setZipCode] = useState("");
+
+  // Contact info editable state
+  const [editingContact, setEditingContact] = useState(false);
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactAddress, setContactAddress] = useState("");
+  const [savingContact, setSavingContact] = useState(false);
   const [confidencePct, setConfidencePct] = useState("100");
   const [fenceSides, setFenceSides] = useState<string[]>([]);
   const [savingEstimate, setSavingEstimate] = useState(false);
+  const [estimateSaved, setEstimateSaved] = useState(false);
   const [additionalServicesSent, setAdditionalServicesSent] = useState(false);
   const [markingAddons, setMarkingAddons] = useState(false);
 
@@ -79,11 +100,27 @@ export default function LeadDetailPage() {
   const [approvingEstimate, setApprovingEstimate] = useState(false);
   const [estimateSent, setEstimateSent] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [forceSend, setForceSend] = useState(false);
 
   // GHL Messages state
   const [messages, setMessages] = useState<GHLMessage[]>([]);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+
+  // Estimate history state
+  const [estimateHistory, setEstimateHistory] = useState<Estimate[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Address confirmation state
+  const [confirmingAddress, setConfirmingAddress] = useState(false);
+  const [addressConfirmed, setAddressConfirmed] = useState(false);
+
+  // Estimate preview modal
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewToken, setPreviewToken] = useState<string | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
 
   useEffect(() => {
     api.getLead(id).then((data) => {
@@ -97,7 +134,8 @@ export default function LeadDetailPage() {
       setTimeline(String(fd.service_timeline || fd.timeframe || ""));
       setAdditionalServices(String(fd.additional_services || ""));
       setZipCode(String(fd.zip_code || ""));
-      setConfidencePct(String(fd.confident_pct ?? 100));
+      const storedPct = Number(fd.confident_pct ?? 100);
+      setConfidencePct(storedPct >= 90 ? "100" : storedPct >= 75 ? "80" : "60");
       const rawSides = fd.fence_sides;
       if (Array.isArray(rawSides)) setFenceSides(rawSides);
       else if (typeof rawSides === "string" && rawSides) setFenceSides(rawSides.split(",").map((s: string) => s.trim()));
@@ -106,6 +144,9 @@ export default function LeadDetailPage() {
       if (data.status === "sent" || data.estimate?.status === "approved") {
         setEstimateSent(true);
       }
+      setContactName(data.contact_name || "");
+      setContactPhone(data.contact_phone || "");
+      setContactAddress(data.address || "");
     }).catch(console.error).finally(() => setLoading(false));
   }, [id]);
 
@@ -115,16 +156,34 @@ export default function LeadDetailPage() {
     );
   };
 
+  const handleLoadHistory = async () => {
+    if (!lead) return;
+    setLoadingHistory(true);
+    try {
+      const all = await api.getLeadEstimates(lead.id);
+      // Exclude the current active estimate from history
+      setEstimateHistory(all.filter((e) => e.id !== lead.estimate?.id));
+      setHistoryLoaded(true);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const handleLoadMessages = async (refresh = false) => {
     if (!lead) return;
     if (messagesLoaded && !refresh) return;
     setLoadingMessages(true);
+    setMessagesError(null);
     try {
       const result = await api.getLeadMessages(lead.id);
       setMessages(result.messages || []);
       setMessagesLoaded(true);
-    } catch (e) {
-      console.error(e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to load messages";
+      setMessagesError(msg);
+      setMessagesLoaded(true);
     } finally {
       setLoadingMessages(false);
     }
@@ -153,7 +212,7 @@ export default function LeadDetailPage() {
     setApprovingEstimate(true);
     setApproveError(null);
     try {
-      await api.approveEstimate(lead.estimate.id);
+      await api.approveEstimate(lead.estimate.id, "signature", forceSend);
       setEstimateSent(true);
       setLead({ ...lead, status: "sent" });
     } catch (e: unknown) {
@@ -163,12 +222,42 @@ export default function LeadDetailPage() {
     }
   };
 
+  const handleConfirmAddress = async () => {
+    if (!lead) return;
+    setConfirmingAddress(true);
+    try {
+      await api.confirmAddress(lead.id);
+      setAddressConfirmed(true);
+      setLead({
+        ...lead,
+        form_data: { ...lead.form_data, address_confirmed: true },
+      });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setConfirmingAddress(false);
+    }
+  };
+
   const handleMarkAddonsSent = async () => {
     if (!lead?.estimate) return;
     setMarkingAddons(true);
     try {
       await api.markAdditionalServicesSent(lead.estimate.id);
       setAdditionalServicesSent(true);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setMarkingAddons(false);
+    }
+  };
+
+  const handleUnmarkAddonsSent = async () => {
+    if (!lead?.estimate) return;
+    setMarkingAddons(true);
+    try {
+      await api.unmarkAdditionalServicesSent(lead.estimate.id);
+      setAdditionalServicesSent(false);
     } catch (e) {
       console.error(e);
     } finally {
@@ -208,6 +297,8 @@ export default function LeadDetailPage() {
       setLead(updated);
       setEstimateSent(false); // Reset sent state after recalculation
       setApproveError(null);
+      setEstimateSaved(true);
+      setTimeout(() => setEstimateSaved(false), 3000);
     } catch (e) {
       console.error(e);
     }
@@ -239,6 +330,7 @@ export default function LeadDetailPage() {
   const approvalCfg = APPROVAL_CONFIG[approvalStatus as keyof typeof APPROVAL_CONFIG];
   const canApproveInline = (approvalStatus === "green" || approvalStatus === "yellow") && est?.status === "pending";
   const isRed = approvalStatus === "red";
+  const tiers = est?.inputs?._tiers as Record<string, number> | undefined;
 
   const inboundMessages = messages.filter((m) => m.direction === "inbound");
   const customerRespondedFromMessages = inboundMessages.length > 0;
@@ -252,41 +344,129 @@ export default function LeadDetailPage() {
           </Link>
         </Button>
         <div>
-          <h1 className="text-2xl font-bold">{lead.contact_name || lead.address}</h1>
+          <h1 className="text-2xl font-bold">{contactName || contactAddress || lead.id.slice(0, 8)}</h1>
           <p className="text-muted-foreground text-sm">Lead #{lead.id.slice(0, 8)} · {formatDate(lead.created_at)}</p>
         </div>
       </div>
 
+      {/* Address Autocomplete Warning Banner */}
+      {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && !addressConfirmed && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-4 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+          <div className="flex-1 space-y-1 min-w-0">
+            <p className="text-sm font-semibold text-amber-800">Address was auto-completed — please confirm with the customer</p>
+            {lead.form_data?.original_address && (
+              <p className="text-xs text-amber-700">
+                <span className="font-medium">Customer entered:</span> {String(lead.form_data.original_address)}
+              </p>
+            )}
+            <p className="text-xs text-amber-700">
+              <span className="font-medium">Auto-completed to:</span> {lead.address}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="bg-amber-600 hover:bg-amber-700 text-white shrink-0"
+            disabled={confirmingAddress}
+            onClick={handleConfirmAddress}
+          >
+            {confirmingAddress ? "Confirming..." : "Confirm Address"}
+          </Button>
+        </div>
+      )}
+
       {/* Contact Info */}
-      {(lead.contact_name || lead.contact_phone || lead.contact_email) && (
-        <Card>
-          <CardHeader>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2">
               <User className="h-4 w-4" /> Contact Info
             </CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-6">
-            {lead.contact_name && (
-              <div className="flex items-center gap-2 text-sm">
-                <User className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">{lead.contact_name}</span>
+            {!editingContact ? (
+              <Button size="sm" variant="outline" onClick={() => setEditingContact(true)}>
+                Edit
+              </Button>
+            ) : (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={savingContact}
+                  onClick={async () => {
+                    setSavingContact(true);
+                    try {
+                      await api.updateLeadContact(lead.id, {
+                        contact_name: contactName,
+                        contact_phone: contactPhone,
+                        address: contactAddress,
+                      });
+                      setLead({ ...lead, contact_name: contactName, contact_phone: contactPhone, address: contactAddress });
+                      setEditingContact(false);
+                    } catch (e) {
+                      console.error(e);
+                    }
+                    setSavingContact(false);
+                  }}
+                >
+                  {savingContact ? "Saving..." : "Save"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  setContactName(lead.contact_name || "");
+                  setContactPhone(lead.contact_phone || "");
+                  setContactAddress(lead.address || "");
+                  setEditingContact(false);
+                }}>
+                  Cancel
+                </Button>
               </div>
             )}
-            {lead.contact_phone && (
-              <a href={`tel:${lead.contact_phone}`} className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
-                <Phone className="h-4 w-4" />
-                {lead.contact_phone}
-              </a>
-            )}
-            {lead.contact_email && (
-              <a href={`mailto:${lead.contact_email}`} className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
-                <Mail className="h-4 w-4" />
-                {lead.contact_email}
-              </a>
-            )}
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {editingContact ? (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Name</label>
+                <Input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Full name" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Phone</label>
+                <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="Phone number" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Address</label>
+                <Input value={contactAddress} onChange={(e) => setContactAddress(e.target.value)} placeholder="Street address" />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-6">
+              {contactName && (
+                <div className="flex items-center gap-2 text-sm">
+                  <User className="h-4 w-4 text-muted-foreground" />
+                  <span className="font-medium">{contactName}</span>
+                </div>
+              )}
+              {contactPhone && (
+                <a href={`tel:${contactPhone}`} className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
+                  <Phone className="h-4 w-4" />
+                  {contactPhone}
+                </a>
+              )}
+              {lead.contact_email && (
+                <a href={`mailto:${lead.contact_email}`} className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
+                  <Mail className="h-4 w-4" />
+                  {lead.contact_email}
+                </a>
+              )}
+              {contactAddress && (
+                <div className="flex items-center gap-2 text-sm">
+                  <MapPin className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-muted-foreground">{contactAddress}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 md:grid-cols-2">
         {/* Lead Details */}
@@ -398,6 +578,11 @@ export default function LeadDetailPage() {
                 ? `Customer replied: "${lead.customer_response_text}" — click Load Messages to see full thread.`
                 : "Click 'Load Messages' to see the SMS conversation, or 'Check for Response' to detect a new reply."}
             </p>
+          ) : messagesError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p className="font-semibold mb-1">Could not load messages</p>
+              <p className="text-xs opacity-80">{messagesError}</p>
+            </div>
           ) : messages.length === 0 ? (
             <p className="text-sm text-muted-foreground">No messages yet for this contact.</p>
           ) : (
@@ -422,100 +607,6 @@ export default function LeadDetailPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Estimate Result */}
-      {est && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">Estimate</CardTitle>
-              <Badge variant={
-                est.status === "approved" ? "success" :
-                est.status === "rejected" ? "destructive" : "pending"
-              }>
-                {estimateSent ? "sent" : est.status}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {approvalCfg && (
-              <div className={`flex items-start gap-3 border rounded-lg px-3 py-2 ${approvalCfg.classes}`}>
-                <span className={`mt-0.5 h-2.5 w-2.5 rounded-full flex-shrink-0 ${approvalCfg.dot}`} />
-                <div>
-                  <p className="font-semibold text-sm">{approvalCfg.label}</p>
-                  {approvalReason && <p className="text-xs mt-0.5 opacity-80">{approvalReason}</p>}
-                  {isRed && (
-                    <p className="text-xs mt-1 opacity-70">VA action: None needed — Alan will review this estimate.</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between">
-              <p className="text-3xl font-bold">
-                {est.estimate_low > 0
-                  ? `${formatCurrency(est.estimate_low)}–${formatCurrency(est.estimate_high)}`
-                  : "—"}
-              </p>
-
-              {/* Action area — differs by status */}
-              {estimateSent ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-700">
-                  <CheckCircle2 className="h-4 w-4" /> Sent to customer
-                </span>
-              ) : isRed ? (
-                <Button variant="outline" asChild>
-                  <Link href={`/estimates/${est.id}`}>View Estimate →</Link>
-                </Button>
-              ) : canApproveInline ? (
-                <div className="flex flex-col items-end gap-1">
-                  <Button
-                    className="gap-2 bg-green-600 hover:bg-green-700"
-                    onClick={handleApproveEstimate}
-                    disabled={approvingEstimate || (!lead.customer_responded && !customerRespondedFromMessages)}
-                  >
-                    <Send className="h-4 w-4" />
-                    {approvingEstimate ? "Sending..." : "Approve & Send to Client"}
-                  </Button>
-                  {!lead.customer_responded && !customerRespondedFromMessages && (
-                    <p className="text-xs text-muted-foreground">Waiting for customer reply first</p>
-                  )}
-                </div>
-              ) : (
-                <Button asChild>
-                  <Link href={`/estimates/${est.id}`}>View Estimate</Link>
-                </Button>
-              )}
-            </div>
-
-            {approveError && (
-              <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                {approveError}
-              </div>
-            )}
-
-            {/* Yellow: add-ons tracking */}
-            {approvalStatus === "yellow" && (
-              <div className="flex items-center justify-between pt-1 border-t">
-                <p className="text-sm text-muted-foreground">Additional services pricing</p>
-                {additionalServicesSent ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                    <CheckCircle2 className="h-3 w-3" /> Sent Additional Proposal
-                  </span>
-                ) : (
-                  <Button size="sm" variant="outline" className="text-xs h-7 px-2"
-                    disabled={markingAddons}
-                    onClick={handleMarkAddonsSent}
-                  >
-                    {markingAddons ? "Saving…" : "Mark Add-ons Sent"}
-                  </Button>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
 
       {/* Estimate Inputs — VA fills this in */}
       <Card>
@@ -551,16 +642,11 @@ export default function LeadDetailPage() {
               <p className="text-xs text-muted-foreground">Determines pricing zone</p>
             </div>
             <div className="space-y-1">
-              <label className="text-sm font-medium">Confidence Score (%)</label>
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                placeholder="e.g. 85"
-                value={confidencePct}
-                onChange={(e) => setConfidencePct(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">Below 80% → Needs Review</p>
+              <label className="text-sm font-medium">Measurement Confidence</label>
+              <select className={selectCls} value={confidencePct} onChange={(e) => setConfidencePct(e.target.value)}>
+                {CONFIDENCE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <p className="text-xs text-muted-foreground">"Not confident" → Owner review</p>
             </div>
           </div>
 
@@ -630,20 +716,202 @@ export default function LeadDetailPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-sm font-medium">Additional Services</label>
-            <Input
-              placeholder="e.g. gate painting, pressure washing (leave blank if none)"
-              value={additionalServices}
-              onChange={(e) => setAdditionalServices(e.target.value)}
-            />
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Additional Services</label>
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 rounded"
+                  checked={editingAdditionalServices}
+                  onChange={(e) => setEditingAdditionalServices(e.target.checked)}
+                />
+                Edit
+              </label>
+            </div>
+            {editingAdditionalServices ? (
+              <Input
+                placeholder="e.g. gate painting, pressure washing (leave blank if none)"
+                value={additionalServices}
+                onChange={(e) => setAdditionalServices(e.target.value)}
+              />
+            ) : (
+              <div className="w-full border border-input rounded-md px-3 py-2 text-sm bg-muted/40 text-muted-foreground min-h-[36px]">
+                {additionalServices || <span className="italic">None (from GHL lead form)</span>}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">Auto-populated from the customer's GHL form. Check "Edit" to override.</p>
           </div>
 
-          <Button onClick={handleSaveEstimateInputs} disabled={savingEstimate} className="gap-2">
+          <Button
+            onClick={handleSaveEstimateInputs}
+            disabled={savingEstimate}
+            className={`gap-2 ${estimateSaved ? "bg-green-600 hover:bg-green-600" : ""}`}
+          >
             <RefreshCw className={`h-4 w-4 ${savingEstimate ? "animate-spin" : ""}`} />
-            {savingEstimate ? "Recalculating..." : "Save & Recalculate Estimate"}
+            {savingEstimate ? "Recalculating..." : estimateSaved ? "Saved ✓" : "Save & Recalculate Estimate"}
           </Button>
         </CardContent>
       </Card>
+
+      {/* Estimate Result */}
+      {est && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">Estimate</CardTitle>
+              <Badge variant={
+                est.status === "approved" ? "success" :
+                est.status === "rejected" ? "destructive" : "pending"
+              }>
+                {estimateSent ? "sent" : est.status}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {approvalCfg && (
+              <div className={`flex items-start gap-3 border rounded-lg px-3 py-2 ${approvalCfg.classes}`}>
+                <span className={`mt-0.5 h-2.5 w-2.5 rounded-full flex-shrink-0 ${approvalCfg.dot}`} />
+                <div>
+                  <p className="font-semibold text-sm">{approvalCfg.label}</p>
+                  {approvalReason && <p className="text-xs mt-0.5 opacity-80">{approvalReason}</p>}
+                  {isRed && (
+                    <p className="text-xs mt-1 opacity-70">VA action: None needed — Alan will review this estimate.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tier price cards — display only, all 3 are sent together */}
+            {tiers ? (
+              <div className="grid grid-cols-3 gap-2">
+                {TIER_CONFIG.map(({ key, label }) => {
+                  const price = tiers[key];
+                  return (
+                    <div key={key} className="rounded-lg border-2 border-border p-3 text-left">
+                      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+                      <p className="text-lg font-bold mt-0.5">
+                        {price ? `$${Number(price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                      </p>
+                      {price ? (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          ${(Number(price) / 21).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-3xl font-bold">
+                {est.estimate_low > 0 ? formatCurrency(est.estimate_low) : "—"}
+              </p>
+            )}
+
+            {/* Preview Estimate button */}
+            {tiers && (
+              <button
+                onClick={async () => {
+                  const token = est?.proposal_token;
+                  if (token) {
+                    setPreviewToken(token);
+                    setShowPreview(true);
+                    return;
+                  }
+                  if (!est?.id) return;
+                  setLoadingPreview(true);
+                  try {
+                    const { token: t } = await api.getPreviewToken(est.id);
+                    setPreviewToken(t);
+                    setShowPreview(true);
+                  } catch (e) {
+                    console.error(e);
+                  } finally {
+                    setLoadingPreview(false);
+                  }
+                }}
+                disabled={loadingPreview}
+                className="text-sm text-blue-600 hover:text-blue-700 underline underline-offset-2 disabled:opacity-50"
+              >
+                {loadingPreview ? "Loading…" : "Preview estimate →"}
+              </button>
+            )}
+
+            {/* Action area — differs by status */}
+            {estimateSent ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-700">
+                <CheckCircle2 className="h-4 w-4" /> Sent to customer
+              </span>
+            ) : isRed ? (
+              <Button variant="outline" asChild>
+                <Link href={`/estimates/${est.id}`}>View Estimate →</Link>
+              </Button>
+            ) : canApproveInline ? (
+              <div className="flex flex-col gap-2 w-full">
+                {!lead.customer_responded && !customerRespondedFromMessages && (
+                  <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded"
+                      checked={forceSend}
+                      onChange={(e) => setForceSend(e.target.checked)}
+                    />
+                    <span className="text-muted-foreground">
+                      Send packages even though there has been no text back
+                    </span>
+                  </label>
+                )}
+                <Button
+                  className="gap-2 bg-green-600 hover:bg-green-700 w-full"
+                  onClick={handleApproveEstimate}
+                  disabled={approvingEstimate || (!lead.customer_responded && !customerRespondedFromMessages && !forceSend)}
+                >
+                  <Send className="h-4 w-4" />
+                  {approvingEstimate ? "Sending..." : "Approve & Send All Packages"}
+                </Button>
+              </div>
+            ) : (
+              <Button asChild>
+                <Link href={`/estimates/${est.id}`}>View Estimate</Link>
+              </Button>
+            )}
+
+            {approveError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                {approveError}
+              </div>
+            )}
+
+            {/* Yellow: add-ons tracking */}
+            {approvalStatus === "yellow" && (
+              <div className="flex items-center justify-between pt-1 border-t">
+                <p className="text-sm text-muted-foreground">Additional services pricing</p>
+                {additionalServicesSent ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                      <CheckCircle2 className="h-3 w-3" /> Sent Additional Proposal
+                    </span>
+                    <button
+                      className="text-xs text-muted-foreground hover:text-destructive underline underline-offset-2"
+                      disabled={markingAddons}
+                      onClick={handleUnmarkAddonsSent}
+                    >
+                      Undo
+                    </button>
+                  </span>
+                ) : (
+                  <Button size="sm" variant="outline" className="text-xs h-7 px-2"
+                    disabled={markingAddons}
+                    onClick={handleMarkAddonsSent}
+                  >
+                    {markingAddons ? "Saving…" : "Mark Add-ons Sent"}
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* VA Notes */}
       <Card>
@@ -666,6 +934,114 @@ export default function LeadDetailPage() {
           </Button>
         </CardContent>
       </Card>
+      {/* Estimate History */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <History className="h-4 w-4" /> Estimate History
+            </CardTitle>
+            {!historyLoaded ? (
+              <Button size="sm" variant="outline" onClick={handleLoadHistory} disabled={loadingHistory}>
+                {loadingHistory ? "Loading..." : "Load History"}
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={handleLoadHistory} disabled={loadingHistory}>
+                <RefreshCw className={`h-3.5 w-3.5 ${loadingHistory ? "animate-spin" : ""}`} />
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {!historyLoaded ? (
+            <p className="text-sm text-muted-foreground">Click "Load History" to see all previous estimates for this lead.</p>
+          ) : estimateHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No previous estimates found.</p>
+          ) : (
+            <div className="space-y-3">
+              {estimateHistory.map((e) => {
+                const t = e.inputs?._tiers as Record<string, number> | undefined;
+                const approvalStatus = e.inputs?._approval_status as string | undefined;
+                const statusColor =
+                  approvalStatus === "green" ? "bg-green-500" :
+                  approvalStatus === "yellow" ? "bg-yellow-400" :
+                  "bg-red-500";
+                return (
+                  <div key={e.id} className="flex items-center justify-between rounded-lg border px-3 py-2 gap-4">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {approvalStatus && (
+                        <span className={`h-2 w-2 rounded-full flex-shrink-0 ${statusColor}`} />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs text-muted-foreground">{formatDate(e.created_at)}</p>
+                        {e.owner_notes && (
+                          <p className="text-xs text-muted-foreground truncate">{e.owner_notes}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {t?.signature ? (
+                        <div className="text-right text-xs space-y-0.5">
+                          <div>E <span className="font-medium">{formatCurrency(t.essential || 0)}</span></div>
+                          <div>S <span className="font-semibold">{formatCurrency(t.signature)}</span></div>
+                          <div>L <span className="font-medium">{formatCurrency(t.legacy || 0)}</span></div>
+                        </div>
+                      ) : (
+                        <span className="text-sm font-medium">{formatCurrency(e.estimate_low)}</span>
+                      )}
+                      <Badge variant={
+                        e.status === "approved" ? "success" :
+                        e.status === "rejected" ? "destructive" :
+                        e.status === "adjusted" ? "warning" : "pending"
+                      }>
+                        {e.status}
+                      </Badge>
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={`/estimates/${e.id}`}>View</Link>
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Preview Estimate Modal — loads actual proposal page in iframe */}
+      {showPreview && previewToken && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4" onClick={() => setShowPreview(false)}>
+          <div
+            className="rounded-2xl w-full shadow-2xl overflow-hidden flex flex-col"
+            style={{ maxWidth: 420, maxHeight: "90vh", background: "#0D0C0A" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Toolbar */}
+            <div className="flex items-center justify-between px-4 py-2.5 shrink-0" style={{ borderBottom: "1px solid rgba(212,166,74,0.2)" }}>
+              <p className="text-xs font-medium text-gray-400">
+                Customer view — {est?.proposal_token ? "live proposal" : "preview"}
+              </p>
+              <div className="flex items-center gap-2">
+                <a
+                  href={`/proposal/${previewToken}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs px-2.5 py-1 rounded-lg transition-colors"
+                  style={{ background: "#D4A64A", color: "#0D0C0A", fontWeight: 600 }}
+                >
+                  Open full page ↗
+                </a>
+                <button onClick={() => setShowPreview(false)} className="text-gray-500 hover:text-gray-300 transition-colors p-1 text-lg leading-none">✕</button>
+              </div>
+            </div>
+            <iframe
+              src={`/proposal/${previewToken}`}
+              style={{ width: "100%", flex: 1, minHeight: 580, border: "none" }}
+              title="Customer Proposal Preview"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

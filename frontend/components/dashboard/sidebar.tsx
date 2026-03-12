@@ -9,12 +9,14 @@ import {
   FileText,
   Settings,
   Droplets,
+  CalendarDays,
 } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Users },
   { href: "/estimates", label: "Estimates", icon: FileText },
+  { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

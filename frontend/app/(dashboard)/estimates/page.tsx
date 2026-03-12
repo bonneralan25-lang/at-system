@@ -49,6 +49,19 @@ export default function EstimatesPage() {
     setMarkingId(null);
   };
 
+  const handleUnmarkAdditionalSent = async (est: Estimate) => {
+    setMarkingId(est.id);
+    try {
+      await api.unmarkAdditionalServicesSent(est.id);
+      setEstimates((prev) =>
+        prev.map((e) => e.id === est.id ? { ...e, additional_services_sent: false } : e)
+      );
+    } catch (e) {
+      console.error(e);
+    }
+    setMarkingId(null);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -95,9 +108,18 @@ export default function EstimatesPage() {
                       </span>
                       <Badge variant={statusVariant[est.status]}>{est.status}</Badge>
                       {est.additional_services_sent && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Sent Additional Proposal
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Sent Additional Proposal
+                          </span>
+                          <button
+                            className="text-xs text-muted-foreground hover:text-destructive underline underline-offset-2"
+                            disabled={markingId === est.id}
+                            onClick={() => handleUnmarkAdditionalSent(est)}
+                          >
+                            Undo
+                          </button>
                         </span>
                       )}
                     </div>
@@ -111,9 +133,17 @@ export default function EstimatesPage() {
                     </p>
                   </div>
                   <div className="text-right space-y-2 shrink-0">
-                    <p className="font-bold text-xl">
-                      {formatCurrency(est.estimate_low)}–{formatCurrency(est.estimate_high)}
-                    </p>
+                    {(() => {
+                      const t = est.inputs?._tiers as Record<string, number> | undefined;
+                      if (t?.signature) return (
+                        <div className="text-xs font-medium text-emerald-700 space-y-0.5 text-right">
+                          <div>E <span className="font-semibold">{formatCurrency(t.essential || 0)}</span></div>
+                          <div>S <span className="font-bold text-sm">{formatCurrency(t.signature)}</span></div>
+                          <div>L <span className="font-semibold">{formatCurrency(t.legacy || 0)}</span></div>
+                        </div>
+                      );
+                      return <p className="font-bold text-xl">{formatCurrency(est.estimate_low)}</p>;
+                    })()}
                     <div className="flex flex-col gap-1.5 items-end">
                       <Button size="sm" asChild>
                         <Link href={`/estimates/${est.id}`}>

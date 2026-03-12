@@ -14,6 +14,7 @@ from config import get_settings
 from services.ghl import parse_webhook_payload
 from services.estimator import calculate_estimate
 from services.notify import notify_owner
+from services.geocoder import has_zip, complete_address as geocode_address
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,6 +143,61 @@ async def recalculate_estimate_for_lead(lead_id: str, lead_data: dict):
         logger.error(f"Failed to recalculate estimate for lead {lead_id}: {e}")
 
 
+@router.post("/webhook/ghl/message")
+async def ghl_message_webhook(request: Request):
+    """Receives GHL InboundMessage / OutboundMessage events and stores them in the DB."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    msg_type = payload.get("type", "")
+    logger.info(f"GHL message webhook: type={msg_type}")
+
+    if msg_type not in ("InboundMessage", "OutboundMessage", "ConversationProviderOutboundMessage"):
+        return {"status": "ignored", "type": msg_type}
+
+    contact_id = payload.get("contactId") or payload.get("contact_id", "")
+    if not contact_id:
+        return {"status": "ignored", "reason": "no contactId"}
+
+    direction = "inbound" if msg_type == "InboundMessage" else "outbound"
+    body_text = payload.get("body") or payload.get("message") or ""
+    date_added = payload.get("dateAdded") or payload.get("createdAt") or datetime.now(timezone.utc).isoformat()
+    ghl_message_id = payload.get("messageId") or payload.get("id")
+    message_type = payload.get("messageType") or "SMS"
+
+    db = get_db()
+
+    # Find the lead by contact_id
+    lead_res = db.table("leads").select("id").eq("ghl_contact_id", contact_id).single().execute()
+    lead_id = lead_res.data["id"] if lead_res.data else None
+
+    msg_data = {
+        "ghl_contact_id": contact_id,
+        "lead_id": lead_id,
+        "direction": direction,
+        "body": body_text,
+        "message_type": message_type,
+        "date_added": date_added,
+    }
+
+    if ghl_message_id:
+        db.table("messages").upsert({**msg_data, "ghl_message_id": ghl_message_id}, on_conflict="ghl_message_id").execute()
+    else:
+        db.table("messages").insert(msg_data).execute()
+
+    # Auto-update customer_responded when an inbound message arrives
+    if direction == "inbound" and lead_id:
+        db.table("leads").update({
+            "customer_responded": True,
+            "customer_response_text": body_text[:500],
+        }).eq("id", lead_id).execute()
+        logger.info(f"Inbound message from {contact_id} — lead {lead_id} marked as responded")
+
+    return {"status": "ok"}
+
+
 @router.post("/webhook/ghl")
 async def ghl_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
@@ -153,6 +209,19 @@ async def ghl_webhook(request: Request, background_tasks: BackgroundTasks):
 
     field_map = get_field_map()
     lead_data = parse_webhook_payload(payload, field_map=field_map)
+
+    # Autocomplete partial address (missing zip) via Google Geocoding
+    settings = get_settings()
+    _raw_addr = lead_data.get("address", "")
+    if _raw_addr and not has_zip(_raw_addr) and settings.google_maps_api_key:
+        geo = geocode_address(_raw_addr, settings.google_maps_api_key)
+        if geo:
+            lead_data["form_data"]["original_address"] = _raw_addr
+            lead_data["form_data"]["address_autocompleted"] = True
+            lead_data["form_data"]["address_confirmed"] = False
+            lead_data["address"] = geo["full_address"]
+            lead_data["form_data"]["zip_code"] = geo["zip_code"]
+            logger.info(f"Address autocompleted for incoming lead: '{_raw_addr}' → '{geo['full_address']}'")
 
     if not lead_data["ghl_contact_id"]:
         logger.warning("GHL webhook missing contactId — ignoring")

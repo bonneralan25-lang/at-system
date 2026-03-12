@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
+from datetime import datetime, timezone
 
 from db import get_db
 from config import get_settings
@@ -44,7 +45,18 @@ async def get_lead(lead_id: str):
         .execute()
     )
     if est_res.data:
-        lead["estimate"] = est_res.data[0]
+        estimate = est_res.data[0]
+        # Attach proposal token if one exists for this estimate
+        prop_res = (
+            db.table("proposals")
+            .select("token")
+            .eq("estimate_id", estimate["id"])
+            .limit(1)
+            .execute()
+        )
+        if prop_res.data:
+            estimate["proposal_token"] = prop_res.data[0]["token"]
+        lead["estimate"] = estimate
 
     return lead
 
@@ -101,6 +113,80 @@ async def update_va_notes(lead_id: str, body: dict):
     return {"status": "updated"}
 
 
+@router.put("/{lead_id}/contact")
+async def update_lead_contact(lead_id: str, body: dict):
+    """Update contact name, phone, and address on a lead.
+    
+    If the address changes, the zip code is extracted from it and form_data.zip_code
+    is updated, then the estimator is re-run so the pricing zone stays accurate.
+    """
+    import re
+    db = get_db()
+    lead_res = db.table("leads").select("*").eq("id", lead_id).single().execute()
+    if not lead_res.data:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    lead = lead_res.data
+
+    update: dict = {}
+    if "contact_name" in body:
+        update["contact_name"] = body["contact_name"]
+    if "contact_phone" in body:
+        update["contact_phone"] = body["contact_phone"]
+
+    reestimate = False
+    if "address" in body and body["address"] != lead.get("address", ""):
+        update["address"] = body["address"]
+        # Extract 5-digit zip from new address and sync it into form_data
+        # Also clear the autocomplete flag since Alan is manually setting the address
+        zip_match = re.search(r"\b(\d{5})\b", body["address"])
+        existing_fd = lead.get("form_data") or {}
+        merged_form_data = {
+            **existing_fd,
+            "address_autocompleted": False,
+            "address_confirmed": True,
+        }
+        if zip_match:
+            merged_form_data["zip_code"] = zip_match.group(1)
+            reestimate = True
+        update["form_data"] = merged_form_data
+
+    if update:
+        db.table("leads").update(update).eq("id", lead_id).execute()
+
+    if reestimate:
+        from api.webhooks import recalculate_estimate_for_lead
+        form_data = update.get("form_data") or lead.get("form_data") or {}
+        lead_data = {
+            "service_type": lead["service_type"],
+            "form_data": form_data,
+            "zip_code": form_data.get("zip_code", ""),
+            "ghl_contact_id": lead.get("ghl_contact_id", ""),
+        }
+        await recalculate_estimate_for_lead(lead_id, lead_data)
+
+    return {"status": "updated", "reestimated": reestimate}
+
+
+@router.post("/{lead_id}/confirm-address")
+async def confirm_lead_address(lead_id: str):
+    """Mark the autocompleted address as confirmed by Alan."""
+    db = get_db()
+    lead_res = db.table("leads").select("form_data").eq("id", lead_id).single().execute()
+    if not lead_res.data:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    form_data = {**(lead_res.data.get("form_data") or {}), "address_confirmed": True}
+    db.table("leads").update({"form_data": form_data}).eq("id", lead_id).execute()
+    return {"status": "confirmed"}
+
+
+@router.put("/{lead_id}/column")
+async def update_lead_column(lead_id: str, body: dict):
+    """Set or clear the kanban_column override for drag-and-drop positioning."""
+    db = get_db()
+    db.table("leads").update({"kanban_column": body.get("kanban_column")}).eq("id", lead_id).execute()
+    return {"status": "updated"}
+
+
 @router.put("/{lead_id}/tags")
 async def update_lead_tags(lead_id: str, body: dict):
     """Update tags on a lead."""
@@ -143,9 +229,23 @@ async def update_lead_form_data(lead_id: str, body: dict):
     return await get_lead(lead_id)
 
 
+@router.get("/{lead_id}/estimates")
+async def get_lead_estimates(lead_id: str):
+    """Return all estimates for a lead, newest first."""
+    db = get_db()
+    res = (
+        db.table("estimates")
+        .select("*")
+        .eq("lead_id", lead_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
 @router.get("/{lead_id}/messages")
 async def get_lead_messages(lead_id: str):
-    """Return full GHL SMS conversation thread for a lead (inbound + outbound, oldest first)."""
+    """Return full SMS conversation thread. Reads from DB (webhook-synced); falls back to GHL API on first load."""
     db = get_db()
     lead_res = db.table("leads").select("ghl_contact_id").eq("id", lead_id).single().execute()
     if not lead_res.data:
@@ -153,7 +253,39 @@ async def get_lead_messages(lead_id: str):
     contact_id = lead_res.data.get("ghl_contact_id")
     if not contact_id:
         return {"messages": []}
-    msgs = get_all_messages(contact_id)
+
+    # DB-first: webhook keeps this table current after initial setup
+    msgs_res = db.table("messages").select("*").eq("lead_id", lead_id).order("date_added").execute()
+    if msgs_res.data:
+        return {
+            "messages": [
+                {
+                    "direction": m["direction"],
+                    "body": m["body"],
+                    "dateAdded": m["date_added"],
+                    "messageType": m.get("message_type", "SMS"),
+                }
+                for m in msgs_res.data
+            ]
+        }
+
+    # Fallback: fetch from GHL and persist so subsequent loads are free
+    try:
+        msgs = get_all_messages(contact_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    for m in msgs:
+        try:
+            db.table("messages").insert({
+                "ghl_contact_id": contact_id,
+                "lead_id": lead_id,
+                "direction": m.get("direction", "outbound"),
+                "body": m.get("body", ""),
+                "message_type": m.get("messageType", "SMS"),
+                "date_added": m.get("dateAdded") or datetime.now(timezone.utc).isoformat(),
+            }).execute()
+        except Exception:
+            pass  # Skip duplicates on concurrent fetches
     return {"messages": msgs}
 
 

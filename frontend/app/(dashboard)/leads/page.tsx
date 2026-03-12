@@ -1,16 +1,29 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { api, type Lead, type Estimate } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, CheckCircle2, Circle, RefreshCw, Flame, LayoutGrid, List, Send, Sparkles } from "lucide-react";
+import {
+  DndContext,
+  type DragEndEvent,
+  type DragStartEvent,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  useDroppable,
+  useDraggable,
+} from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 
 const LAST_VISIT_KEY = "atSystemLastVisitAt";
 
-type KanbanStatus = "gray" | "no_address" | "needs_info" | "green" | "yellow" | "red" | "follow_up";
+type KanbanStatus = "gray" | "no_address" | "needs_info" | "green" | "yellow" | "red" | "follow_up" | "sent";
 
 // Tags that route a lead into "Needs More Information"
 const NEEDS_INFO_TAGS = new Set(["Needs height", "Age of the Fence", "Needs Info", "needs_info"]);
@@ -26,15 +39,20 @@ const COLUMN_QUEUE_ORDER: Record<KanbanStatus, number> = {
   gray: 4,
   follow_up: 5,
   red: 6,
+  sent: 7,
 };
 
 const PRIORITY_ORDER: Record<string, number> = { HOT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 
 function getKanbanStatus(lead: Lead, estimateMap: Map<string, Estimate>): KanbanStatus {
+  // Sent/approved leads always go to the Estimate Sent column — highest priority override
+  if (lead.status === "sent" || lead.status === "approved") return "sent";
+  const est = estimateMap.get(lead.id);
+  if (est?.status === "approved") return "sent";
+  if (lead.kanban_column) return lead.kanban_column as KanbanStatus;
   if (!lead.address || lead.address.trim() === "") return "no_address";
   if (lead.tags?.some((t) => NEEDS_INFO_TAGS.has(t))) return "needs_info";
   if (lead.tags?.some((t) => FOLLOW_UP_TAGS.has(t))) return "follow_up";
-  const est = estimateMap.get(lead.id);
   if (!est) return "gray";
   const approval = est.inputs?._approval_status;
   if (approval === "green") return "green";
@@ -107,6 +125,14 @@ const COLUMNS: {
     bgCls: "bg-sky-50",
     dotCls: "bg-sky-500",
   },
+  {
+    key: "sent",
+    label: "Estimate Sent",
+    description: "All 3 packages delivered to the customer",
+    headerCls: "bg-emerald-100 border-emerald-200",
+    bgCls: "bg-emerald-50",
+    dotCls: "bg-emerald-500",
+  },
 ];
 
 const COLUMN_BADGE: Record<KanbanStatus, string> = {
@@ -117,6 +143,7 @@ const COLUMN_BADGE: Record<KanbanStatus, string> = {
   no_address: "bg-purple-100 text-purple-700",
   needs_info: "bg-orange-100 text-orange-700",
   follow_up: "bg-sky-100 text-sky-700",
+  sent: "bg-emerald-100 text-emerald-700",
 };
 
 const COLUMN_LABEL: Record<KanbanStatus, string> = {
@@ -127,6 +154,7 @@ const COLUMN_LABEL: Record<KanbanStatus, string> = {
   no_address: "No Address",
   needs_info: "Needs Info",
   follow_up: "Follow Up",
+  sent: "Estimate Sent",
 };
 
 const priorityColors: Record<string, string> = {
@@ -145,6 +173,32 @@ const tagColors: Record<string, string> = {
   "Follow Up": "bg-sky-100 text-sky-700",
 };
 
+function DroppableColumnCards({ id, className, children }: { id: string; className: string; children: ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`${className} transition-colors duration-150${isOver ? " ring-2 ring-inset ring-primary/30 brightness-95" : ""}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DraggableKanbanCard({ leadId, children }: { leadId: string; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: leadId });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`touch-none${isDragging ? " opacity-0" : " cursor-grab active:cursor-grabbing"}`}
+      {...listeners}
+      {...attributes}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [estimateMap, setEstimateMap] = useState<Map<string, Estimate>>(new Map());
@@ -157,6 +211,12 @@ export default function LeadsPage() {
   const [newLeadIds, setNewLeadIds] = useState<Set<string>>(new Set());
   const [newLeadCount, setNewLeadCount] = useState(0);
   const [newBannerDismissed, setNewBannerDismissed] = useState(false);
+  const [activeDragLead, setActiveDragLead] = useState<Lead | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } })
+  );
 
   const loadData = useCallback(async () => {
     const [leadsData, estimatesData] = await Promise.all([
@@ -190,7 +250,19 @@ export default function LeadsPage() {
       loadData().catch(console.error);
       api.getSyncStatus().then((s) => setLastSyncAt(s.last_sync_at)).catch(console.error);
     }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
+
+    // Reload when tab becomes visible again (e.g. after editing a lead detail page)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadData().catch(console.error);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [loadData]);
 
   // Stamp the current time after 5 seconds so next visit knows the baseline
@@ -244,6 +316,31 @@ export default function LeadsPage() {
     }
   };
 
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const lead = leads.find((l) => l.id === event.active.id);
+    setActiveDragLead(lead ?? null);
+  }, [leads]);
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    setActiveDragLead(null);
+    const { active, over } = event;
+    if (!over) return;
+    const leadId = active.id as string;
+    const newCol = over.id as KanbanStatus;
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    const currentCol = getKanbanStatus(lead, estimateMap);
+    if (currentCol === newCol) return;
+    // Optimistic update
+    setLeads((prev) => prev.map((l) => l.id === leadId ? { ...l, kanban_column: newCol } : l));
+    try {
+      await api.updateLeadColumn(leadId, newCol);
+    } catch (e) {
+      console.error(e);
+      setLeads((prev) => prev.map((l) => l.id === leadId ? { ...l, kanban_column: lead.kanban_column ?? null } : l));
+    }
+  }, [leads, estimateMap]);
+
   const filtered = leads.filter((l) => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -258,14 +355,13 @@ export default function LeadsPage() {
     (l) => l.priority === "HOT" && l.status !== "sent" && l.status !== "approved"
   ).length;
 
-  // Queue: all filtered leads sorted by priority then column order
+  // Queue: all filtered leads sorted by priority, then by date (newest first within same priority)
   const queueLeads = [...filtered].sort((a, b) => {
     const pa = PRIORITY_ORDER[a.priority] ?? 2;
     const pb = PRIORITY_ORDER[b.priority] ?? 2;
     if (pa !== pb) return pa - pb;
-    const ca = COLUMN_QUEUE_ORDER[getKanbanStatus(a, estimateMap)];
-    const cb = COLUMN_QUEUE_ORDER[getKanbanStatus(b, estimateMap)];
-    return ca - cb;
+    // Within same priority: newest first
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
 
   if (loading) {
@@ -274,7 +370,7 @@ export default function LeadsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Leads</h1>
         <div className="overflow-x-auto pb-2">
           <div className="flex gap-3" style={{ minWidth: "max-content" }}>
-            {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
               <div key={i} className="h-64 w-64 rounded-lg bg-muted animate-pulse flex-shrink-0" />
             ))}
           </div>
@@ -374,16 +470,20 @@ export default function LeadsPage() {
             <List className="h-3.5 w-3.5" /> Queue
           </button>
         </div>
+        <span className="text-xs text-muted-foreground hidden sm:block">
+          {activeTab === "kanban" ? "↓ Newest submitted first" : "↓ Sorted by priority · HOT → HIGH → MEDIUM → LOW"}
+        </span>
       </div>
 
       {/* ── KANBAN VIEW ── */}
       {activeTab === "kanban" && (
+        <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setActiveDragLead(null)}>
         <div className="overflow-x-auto pb-3">
           <div className="flex gap-3" style={{ minWidth: "max-content" }}>
             {COLUMNS.map((col) => {
               const colLeads = filtered
                 .filter((l) => getKanbanStatus(l, estimateMap) === col.key)
-                .sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
               return (
                 <div
@@ -407,7 +507,7 @@ export default function LeadsPage() {
                   </div>
 
                   {/* Cards */}
-                  <div className={`flex-1 p-2 space-y-2 ${col.bgCls} rounded-b-lg overflow-y-auto`}>
+                  <DroppableColumnCards id={col.key} className={`flex-1 p-2 space-y-2 ${col.bgCls} rounded-b-lg overflow-y-auto`}>
                     {colLeads.length === 0 ? (
                       <p className="text-xs text-muted-foreground text-center py-10">No leads</p>
                     ) : (
@@ -417,8 +517,8 @@ export default function LeadsPage() {
                         const isOwnerLead = col.key === "red";
 
                         return (
+                          <DraggableKanbanCard key={lead.id} leadId={lead.id}>
                           <div
-                            key={lead.id}
                             className={`bg-white rounded-md border shadow-sm p-3 space-y-2 hover:shadow-md transition-shadow ${
                               isOwnerLead ? "opacity-80" : ""
                             } ${newLeadIds.has(lead.id) ? "ring-2 ring-blue-300 ring-offset-1" : ""}`}
@@ -456,12 +556,25 @@ export default function LeadsPage() {
                               <p className="text-xs text-muted-foreground truncate">{lead.address}</p>
                             )}
 
-                            {/* Estimate range */}
-                            {est && est.estimate_low > 0 && (
-                              <p className="text-xs font-semibold text-emerald-700">
-                                ${est.estimate_low.toFixed(0)}–${est.estimate_high.toFixed(0)}
-                              </p>
+                            {/* Unconfirmed address badge */}
+                            {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700 border border-amber-200 font-medium">
+                                ⚠ Confirm address
+                              </span>
                             )}
+
+                            {/* Estimate — tier prices only */}
+                            {(() => {
+                              const t = est?.inputs?._tiers as Record<string, number> | undefined;
+                              if (!t?.signature) return null;
+                              return (
+                                <div className="text-xs text-emerald-700 space-y-0.5">
+                                  <div className="flex gap-2"><span className="text-muted-foreground">E</span><span className="font-medium">${Number(t.essential || 0).toFixed(0)}</span></div>
+                                  <div className="flex gap-2"><span className="text-muted-foreground">S</span><span className="font-semibold">${Number(t.signature).toFixed(0)}</span></div>
+                                  <div className="flex gap-2"><span className="text-muted-foreground">L</span><span className="font-medium">${Number(t.legacy || 0).toFixed(0)}</span></div>
+                                </div>
+                              );
+                            })()}
 
                             {/* Review reason (red column) */}
                             {col.key === "red" && reason && (
@@ -504,15 +617,32 @@ export default function LeadsPage() {
                               </Button>
                             </div>
                           </div>
+                          </DraggableKanbanCard>
                         );
                       })
                     )}
-                  </div>
+                  </DroppableColumnCards>
                 </div>
               );
             })}
           </div>
         </div>
+        <DragOverlay dropAnimation={null}>
+          {activeDragLead ? (
+            <div className="bg-white rounded-md border shadow-xl p-3 space-y-1 cursor-grabbing" style={{ width: "260px" }}>
+              <div className="flex items-center justify-between gap-1">
+                <span className="font-medium text-sm truncate">{activeDragLead.contact_name || "—"}</span>
+                <span className={`inline-flex px-1.5 py-0.5 rounded-full text-xs font-medium ${priorityColors[activeDragLead.priority] || priorityColors.MEDIUM}`}>
+                  {activeDragLead.priority}
+                </span>
+              </div>
+              {activeDragLead.address && (
+                <p className="text-xs text-muted-foreground truncate">{activeDragLead.address}</p>
+              )}
+            </div>
+          ) : null}
+        </DragOverlay>
+        </DndContext>
       )}
 
       {/* ── QUEUE VIEW ── */}
@@ -559,19 +689,28 @@ export default function LeadsPage() {
                     <p className="text-xs text-muted-foreground truncate">{lead.address || "No address"}</p>
                   </div>
 
+                  {/* Unconfirmed address badge */}
+                  {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && (
+                    <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700 border border-amber-200 font-medium">
+                      ⚠ Confirm address
+                    </span>
+                  )}
+
                   {/* Column status badge */}
                   <span className={`shrink-0 hidden sm:inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${COLUMN_BADGE[kanbanStatus]}`}>
                     {isOwner ? "👤 " : ""}{COLUMN_LABEL[kanbanStatus]}
                   </span>
 
-                  {/* Estimate range */}
-                  {est && est.estimate_low > 0 ? (
-                    <span className="shrink-0 text-xs font-semibold text-emerald-700 hidden md:block">
-                      ${est.estimate_low.toFixed(0)}–${est.estimate_high.toFixed(0)}
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-xs text-muted-foreground hidden md:block">No estimate</span>
-                  )}
+                  {/* Estimate — tier prices only */}
+                  {(() => {
+                    const t = est?.inputs?._tiers as Record<string, number> | undefined;
+                    if (!t?.signature) return null;
+                    return (
+                      <span className="shrink-0 text-xs font-medium text-emerald-700 hidden md:block whitespace-nowrap">
+                        E ${Number(t.essential || 0).toFixed(0)} · S ${Number(t.signature).toFixed(0)} · L ${Number(t.legacy || 0).toFixed(0)}
+                      </span>
+                    );
+                  })()}
 
                   {/* Review reason for red */}
                   {isOwner && reason && (

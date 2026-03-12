@@ -48,3 +48,8 @@ class EstimateAdjust(BaseModel):
 
 class EstimateReject(BaseModel):
     notes: Optional[str] = None
+
+
+class EstimateApprove(BaseModel):
+    selected_tier: str = "signature"
+    force_send: bool = False  # bypass the customer-responded guardrail

@@ -52,7 +52,11 @@ const PRIORITY_CONFIG: Record<string, { label: string; classes: string }> = {
 };
 
 function formatCurrencyShort(val: number) {
-  return val > 0 ? `$${val.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "—";
+  return val > 0 ? `$${val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+}
+
+function formatMonthly(val: number) {
+  return val > 0 ? `$${(val / 21).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo` : "";
 }
 
 export default function EstimateDetailPage() {
@@ -61,16 +65,16 @@ export default function EstimateDetailPage() {
   const [estimate, setEstimate] = useState<EstimateDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<"view" | "adjust" | "reject">("view");
-  const [adjustLow, setAdjustLow] = useState("");
-  const [adjustHigh, setAdjustHigh] = useState("");
+  const [forceSend, setForceSend] = useState(false);
+  const [adjustPrice, setAdjustPrice] = useState("");
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     api.getEstimate(id).then((e) => {
       setEstimate(e);
-      setAdjustLow(String(e.estimate_low));
-      setAdjustHigh(String(e.estimate_high));
+      const t = (e.inputs?._tiers as Record<string, number>) || {};
+      setAdjustPrice(String(t.signature || e.estimate_low));
       setLoading(false);
     }).catch(console.error);
   }, [id]);
@@ -78,11 +82,11 @@ export default function EstimateDetailPage() {
   const handleApprove = async () => {
     setSubmitting(true);
     try {
-      await api.approveEstimate(id);
-      toast.success("Estimate approved and sent to client!");
+      await api.approveEstimate(id, "signature", forceSend);
+      toast.success("All packages sent to client!");
       router.push("/estimates");
     } catch (e) {
-      toast.error("Failed to approve estimate");
+      toast.error(e instanceof Error ? e.message : "Failed to approve estimate");
     } finally {
       setSubmitting(false);
     }
@@ -91,7 +95,8 @@ export default function EstimateDetailPage() {
   const handleAdjust = async () => {
     setSubmitting(true);
     try {
-      await api.adjustEstimate(id, Number(adjustLow), Number(adjustHigh), notes);
+      const price = Number(adjustPrice);
+      await api.adjustEstimate(id, price, price, notes);
       toast.success("Estimate adjusted and approved!");
       router.push("/estimates");
     } catch (e) {
@@ -196,27 +201,35 @@ export default function EstimateDetailPage() {
         </div>
       )}
 
-      {/* 3-Tier Pricing (fence staining only) */}
+      {/* 3-Tier Pricing — display only, all 3 are sent together */}
       {estimate.service_type === "fence_staining" && tiers.signature > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Tier Pricing</CardTitle>
+            <CardTitle className="text-base">Package Pricing</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">All 3 packages are sent together in the proposal.</p>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-lg border p-3 text-center space-y-1">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Essential</p>
-                <p className="text-xl font-bold">{formatCurrencyShort(tiers.essential)}</p>
-              </div>
-              <div className="rounded-lg border-2 border-primary p-3 text-center space-y-1 bg-primary/5">
-                <p className="text-xs text-primary font-medium uppercase tracking-wide">Signature ★</p>
-                <p className="text-xl font-bold text-primary">{formatCurrencyShort(tiers.signature)}</p>
-                <p className="text-xs text-muted-foreground">Recommended</p>
-              </div>
-              <div className="rounded-lg border p-3 text-center space-y-1">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Legacy</p>
-                <p className="text-xl font-bold">{formatCurrencyShort(tiers.legacy)}</p>
-              </div>
+              {([
+                { key: "essential", label: "Essential" },
+                { key: "signature", label: "Signature ★", highlight: true },
+                { key: "legacy", label: "Legacy" },
+              ] as const).map(({ key, label, highlight }) => (
+                <div
+                  key={key}
+                  className={`rounded-lg border-2 p-3 text-center space-y-1 ${
+                    highlight ? "border-primary bg-primary/5" : "border-border"
+                  }`}
+                >
+                  <p className={`text-xs font-medium uppercase tracking-wide ${
+                    highlight ? "text-primary" : "text-muted-foreground"
+                  }`}>{label}</p>
+                  <p className="text-xl font-bold">{formatCurrencyShort(tiers[key])}</p>
+                  {tiers[key] > 0 && (
+                    <p className="text-xs text-muted-foreground">{formatMonthly(tiers[key])}</p>
+                  )}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -269,10 +282,27 @@ export default function EstimateDetailPage() {
               </div>
             ))}
             <hr />
-            <div className="flex justify-between font-bold text-lg">
-              <span>Signature Range</span>
-              <span>{formatCurrency(estimate.estimate_low)}–{formatCurrency(estimate.estimate_high)}</span>
-            </div>
+            {tiers.signature > 0 ? (
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Essential</span>
+                  <span className="font-semibold">{formatCurrencyShort(tiers.essential)}</span>
+                </div>
+                <div className="flex justify-between text-base font-bold">
+                  <span>Signature <span className="text-xs font-normal text-muted-foreground">★ Recommended</span></span>
+                  <span>{formatCurrencyShort(tiers.signature)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Legacy</span>
+                  <span className="font-semibold">{formatCurrencyShort(tiers.legacy)}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between font-bold text-lg">
+                <span>Total</span>
+                <span>{formatCurrency(estimate.estimate_low)}</span>
+              </div>
+            )}
             {estimate.owner_notes && (
               <p className="text-sm text-muted-foreground bg-muted p-3 rounded">
                 Note: {estimate.owner_notes}
@@ -290,34 +320,41 @@ export default function EstimateDetailPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {mode === "view" && (
-              <div className="flex gap-3 flex-wrap">
-                <Button onClick={handleApprove} disabled={submitting} className="gap-2">
-                  <CheckCircle className="h-4 w-4" />
-                  Approve & Send to Client
-                </Button>
-                <Button variant="outline" onClick={() => setMode("adjust")} className="gap-2">
-                  <Edit2 className="h-4 w-4" />
-                  Adjust Amount
-                </Button>
-                <Button variant="destructive" onClick={() => setMode("reject")} className="gap-2">
-                  <XCircle className="h-4 w-4" />
-                  Reject
-                </Button>
+              <div className="space-y-3">
+                <div className="flex gap-3 flex-wrap">
+                  <Button onClick={handleApprove} disabled={submitting || (!estimate.lead?.customer_responded && !forceSend)} className="gap-2 bg-green-600 hover:bg-green-700">
+                    <CheckCircle className="h-4 w-4" />
+                    {submitting ? "Sending..." : "Approve & Send All Packages"}
+                  </Button>
+                  <Button variant="outline" onClick={() => setMode("adjust")} className="gap-2">
+                    <Edit2 className="h-4 w-4" />
+                    Adjust Amount
+                  </Button>
+                  <Button variant="destructive" onClick={() => setMode("reject")} className="gap-2">
+                    <XCircle className="h-4 w-4" />
+                    Reject
+                  </Button>
+                </div>
+                <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded"
+                    checked={forceSend}
+                    onChange={(e) => setForceSend(e.target.checked)}
+                  />
+                  <span className="text-muted-foreground">
+                    Send packages even though there has been no text back
+                  </span>
+                </label>
               </div>
             )}
 
             {mode === "adjust" && (
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">Set a custom estimate range, then it will be sent to the client.</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Low estimate ($)</label>
-                    <Input type="number" value={adjustLow} onChange={(e) => setAdjustLow(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">High estimate ($)</label>
-                    <Input type="number" value={adjustHigh} onChange={(e) => setAdjustHigh(e.target.value)} />
-                  </div>
+                <p className="text-sm text-muted-foreground">Set a custom price for this estimate, then it will be sent to the client.</p>
+                <div className="max-w-xs">
+                  <label className="text-sm font-medium mb-1 block">Custom price ($)</label>
+                  <Input type="number" value={adjustPrice} onChange={(e) => setAdjustPrice(e.target.value)} />
                 </div>
                 <div>
                   <label className="text-sm font-medium mb-1 block">Notes (optional)</label>

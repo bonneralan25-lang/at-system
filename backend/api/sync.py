@@ -26,6 +26,10 @@ FORM_FIELD_KEYS = {
     "surface_type", "square_footage",
 }
 
+# Fields entered by the VA in the dashboard — must NEVER be overwritten by a GHL sync.
+# GHL doesn't know about these; they're measured/set by the VA.
+VA_OWNED_FIELDS = {"linear_feet", "zip_code", "confident_pct", "fence_sides"}
+
 # Expected field names we try to auto-map
 EXPECTED_FIELDS = {
     "fence_height", "fence_age", "previously_stained",
@@ -203,6 +207,13 @@ async def run_pipeline_sync(background_tasks: BackgroundTasks | None = None) -> 
                 if stage_name not in current_tags:
                     current_tags = current_tags + [stage_name]
 
+                # Preserve VA-entered fields — GHL sync must never wipe them out.
+                # VA fields (linear_feet, zip_code, etc.) are not present in GHL form data.
+                merged_form_data = {**new_form_data}
+                for field in VA_OWNED_FIELDS:
+                    if field in old_form_data:
+                        merged_form_data[field] = old_form_data[field]
+
                 db.table("leads").update({
                     "priority":      priority,
                     "last_synced_at": now,
@@ -211,16 +222,21 @@ async def run_pipeline_sync(background_tasks: BackgroundTasks | None = None) -> 
                     "address":       lead_data.get("address", ""),
                     "contact_phone": lead_data.get("contact_phone", ""),
                     "contact_email": lead_data.get("contact_email", ""),
-                    "form_data":     new_form_data,
+                    "form_data":     merged_form_data,
                 }).eq("id", lead_id).execute()
 
-                # Re-run estimator only if form_data meaningfully changed
-                if new_form_data != old_form_data:
-                    lead_data["zip_code"] = lead_data.get("zip_code", "")
+                # Re-run estimator only if GHL-sourced fields changed (not VA fields)
+                ghl_fields_changed = any(
+                    old_form_data.get(k) != new_form_data.get(k)
+                    for k in new_form_data
+                    if k not in VA_OWNED_FIELDS
+                )
+                if ghl_fields_changed:
+                    merged_lead_data = {**lead_data, "form_data": merged_form_data, "zip_code": merged_form_data.get("zip_code", lead_data.get("zip_code", ""))}
                     if background_tasks:
-                        background_tasks.add_task(recalculate_estimate_for_lead, lead_id, lead_data)
+                        background_tasks.add_task(recalculate_estimate_for_lead, lead_id, merged_lead_data)
                     else:
-                        asyncio.create_task(recalculate_estimate_for_lead(lead_id, lead_data))
+                        asyncio.create_task(recalculate_estimate_for_lead(lead_id, merged_lead_data))
 
                 updated += 1
                 continue

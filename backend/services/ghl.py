@@ -170,17 +170,31 @@ def send_message_to_contact(contact_id: str, message: str) -> bool:
         return False
 
 
-def format_estimate_for_client(estimate: dict, service_type: str) -> str:
-    """Format the approved estimate as an SMS to send to the lead via GHL."""
-    low = estimate.get("estimate_low", 0)
-    high = estimate.get("estimate_high", 0)
+def format_estimate_for_client(estimate: dict, service_type: str, selected_tier: str = "signature") -> str:
+    """Format the approved estimate as an SMS showing all 3 package options."""
     service = "Fence Restoration" if service_type == "fence_staining" else "Pressure Washing"
+    tiers = (estimate.get("inputs") or {}).get("_tiers") or {}
+    essential  = float(tiers.get("essential") or 0)
+    signature  = float(tiers.get("signature") or 0)
+    legacy     = float(tiers.get("legacy") or 0)
+
+    if essential and signature and legacy:
+        return (
+            f"Hi! Thanks for reaching out about your {service} project. "
+            f"Based on your fence details, here are your package options:\n\n"
+            f"Essential: ${essential:,.0f}\n"
+            f"Signature: ${signature:,.0f}\n"
+            f"Legacy: ${legacy:,.0f}\n\n"
+            f"Our team will be in touch shortly to confirm the details and send your full proposal. "
+            f"Any questions? Reply here anytime!"
+        )
+    # Fallback for non-fence-staining
+    price = estimate.get("estimate_low", 0)
     return (
         f"Hi! Thanks for reaching out about your {service} project. "
-        f"Based on the details you shared, our estimate is "
-        f"${low:,.0f}–${high:,.0f}. "
-        f"This is a preliminary range — our team will be in touch shortly to confirm the details "
-        f"and send your full proposal. Any questions? Reply here anytime!"
+        f"Based on the details you shared, your estimate is ${price:,.0f}. "
+        f"Our team will be in touch shortly to confirm the details and send your full proposal. "
+        f"Any questions? Reply here anytime!"
     )
 
 
@@ -206,6 +220,16 @@ def _fetch_messages_for_contact(contact_id: str) -> list[dict]:
         headers=_headers(),
         timeout=15,
     )
+    if r2.status_code == 401:
+        logger.error(
+            "GHL messages fetch 401: API key is missing 'Conversations / Messages' scope. "
+            "Go to your GHL Private Integration and enable read access for Conversations > Messages, "
+            "then regenerate the API key."
+        )
+        raise PermissionError(
+            "GHL API key is missing the 'Conversations / Messages' read scope. "
+            "Update your Private Integration in GHL to include this permission and regenerate the key."
+        )
     r2.raise_for_status()
     messages_data = r2.json().get("messages", {})
     if isinstance(messages_data, dict):

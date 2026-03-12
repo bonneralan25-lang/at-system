@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     owner_email: str = ""
 
     frontend_url: str = "http://localhost:3000"
+    proposal_base_url: str = "http://localhost:3000"
+
+    owner_ghl_contact_id: str = ""
+
+    google_maps_api_key: str = ""
+    google_calendar_credentials_json: str = ""
+    google_calendar_id: str = "primary"
+
+    stripe_secret_key: str | None = None
 
     class Config:
         env_file = ".env"

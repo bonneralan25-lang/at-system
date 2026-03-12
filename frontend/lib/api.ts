@@ -24,6 +24,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ va_notes: notes }),
     }),
+  updateLeadColumn: (leadId: string, column: string | null) =>
+    request<{ status: string }>(`/api/leads/${leadId}/column`, {
+      method: "PUT",
+      body: JSON.stringify({ kanban_column: column }),
+    }),
   updateLeadTags: (leadId: string, tags: string[]) =>
     request<{ status: string }>(`/api/leads/${leadId}/tags`, {
       method: "PUT",
@@ -34,17 +39,27 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ form_data: formData }),
     }),
+  updateLeadContact: (leadId: string, data: { contact_name?: string; contact_phone?: string; address?: string }) =>
+    request<{ status: string }>(`/api/leads/${leadId}/contact`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   archiveAllLeads: () =>
     request<{ status: string; count: number }>("/api/leads/archive-all", { method: "POST" }),
   getLeadMessages: (leadId: string) =>
     request<{ messages: GHLMessage[] }>(`/api/leads/${leadId}/messages`),
+  getLeadEstimates: (leadId: string) =>
+    request<Estimate[]>(`/api/leads/${leadId}/estimates`),
 
   // Estimates
   getEstimates: (params?: string) =>
     request<Estimate[]>(`/api/estimates${params ? `?${params}` : ""}`),
   getEstimate: (id: string) => request<EstimateDetail>(`/api/estimates/${id}`),
-  approveEstimate: (id: string) =>
-    request<Estimate>(`/api/estimates/${id}/approve`, { method: "POST" }),
+  approveEstimate: (id: string, selectedTier = "signature", forceSend = false) =>
+    request<Estimate>(`/api/estimates/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ selected_tier: selectedTier, force_send: forceSend }),
+    }),
   rejectEstimate: (id: string, notes: string) =>
     request<Estimate>(`/api/estimates/${id}/reject`, {
       method: "POST",
@@ -55,9 +70,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ estimate_low: low, estimate_high: high, owner_notes: notes }),
     }),
+  getPreviewToken: (estimateId: string) =>
+    request<{ token: string }>(`/api/estimates/${estimateId}/preview`, { method: "POST" }),
   markAdditionalServicesSent: (estimateId: string) =>
     request<{ status: string }>(`/api/estimates/${estimateId}/additional-services-sent`, {
       method: "POST",
+    }),
+  unmarkAdditionalServicesSent: (estimateId: string) =>
+    request<{ status: string }>(`/api/estimates/${estimateId}/additional-services-sent`, {
+      method: "DELETE",
     }),
 
   // Settings
@@ -82,6 +103,52 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ our_field_name: ourFieldName }),
     }),
+
+  // Proposals (public — customer booking)
+  getProposal: (token: string) =>
+    request<ProposalData>(`/api/proposal/${token}`),
+  createCheckout: (token: string, data: {
+    selected_tier: string;
+    booked_at: string;
+    contact_email?: string | null;
+    selected_color?: string | null;
+    color_mode?: string;
+    hoa_colors?: number[] | null;
+    custom_color?: string | null;
+  }) =>
+    request<{ checkout_url: string }>(`/api/proposal/${token}/create-checkout`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  bookProposal: (token: string, data: {
+    selected_tier: string;
+    booked_at: string;
+    contact_email?: string | null;
+    selected_color?: string | null;
+    color_mode?: string;
+    hoa_colors?: number[] | null;
+    custom_color?: string | null;
+    stripe_session_id?: string | null;
+  }) =>
+    request<{ status: string; booked_at: string; selected_tier: string }>(
+      `/api/proposal/${token}/book`,
+      { method: "POST", body: JSON.stringify(data) }
+    ),
+
+  // Schedule (public read + admin write)
+  getAvailableDates: (month?: string) =>
+    request<ScheduleSlot[]>(`/api/schedule${month ? `?month=${month}` : ""}`),
+  getAdminSchedule: (month?: string) =>
+    request<AdminScheduleSlot[]>(`/api/admin/schedule${month ? `?month=${month}` : ""}`),
+  upsertScheduleSlot: (slot: Omit<AdminScheduleSlot, "booked_count">) =>
+    request<{ status: string; date: string }>("/api/admin/schedule", {
+      method: "POST",
+      body: JSON.stringify(slot),
+    }),
+  deleteScheduleSlot: (date: string) =>
+    request<{ status: string; date: string }>(`/api/admin/schedule/${date}`, {
+      method: "DELETE",
+    }),
 };
 
 // --- Types ---
@@ -100,12 +167,13 @@ export interface Lead {
   contact_email: string;
   priority: string;
   urgency_level: string;
+  kanban_column?: string | null;
   customer_responded: boolean;
   customer_response_text: string;
   tags: string[];
   va_notes: string;
   created_at: string;
-  form_data: Record<string, string>;
+  form_data: Record<string, unknown>;
 }
 
 export interface LeadDetail extends Lead {
@@ -130,6 +198,7 @@ export interface Estimate {
 export interface EstimateDetail extends Estimate {
   inputs: Record<string, string | number | boolean>;
   breakdown: BreakdownItem[];
+  proposal_token?: string;
 }
 
 export interface BreakdownItem {
@@ -206,4 +275,30 @@ export interface PipelineSyncResult {
 export interface SyncStatus {
   last_sync_at: string | null;
   status: string;
+}
+
+export interface ProposalData {
+  token: string;
+  status: "sent" | "viewed" | "booked";
+  customer_name: string;
+  address: string;
+  service_type?: string;
+  previously_stained?: string;
+  tiers?: { essential: number; signature: number; legacy: number };
+  booked_at?: string;
+  selected_tier?: string;
+}
+
+export interface ScheduleSlot {
+  date: string;        // "2026-03-15"
+  label?: string;
+  spots_remaining: number;
+}
+
+export interface AdminScheduleSlot {
+  date: string;
+  is_available: boolean;
+  label?: string;
+  max_bookings: number;
+  booked_count: number;
 }

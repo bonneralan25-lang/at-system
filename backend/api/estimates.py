@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import secrets
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from datetime import datetime, timezone
 
 from db import get_db
 from config import get_settings
-from models.estimate import EstimateAdjust, EstimateReject
+from models.estimate import EstimateAdjust, EstimateApprove, EstimateReject
 from services.ghl import send_message_to_contact, format_estimate_for_client, add_contact_note
 
 router = APIRouter(prefix="/api/estimates", tags=["estimates"])
@@ -44,7 +45,7 @@ async def get_estimate(estimate_id: str):
 
 
 @router.post("/{estimate_id}/approve")
-async def approve_estimate(estimate_id: str):
+async def approve_estimate(estimate_id: str, body: EstimateApprove = EstimateApprove()):
     db = get_db()
     res = db.table("estimates").select("*, lead:leads(*)").eq("id", estimate_id).single().execute()
     if not res.data:
@@ -53,34 +54,59 @@ async def approve_estimate(estimate_id: str):
     estimate = res.data
     lead = estimate.get("lead") or {}
 
-    # Guardrail: VA may only send estimate after customer has responded
-    if not lead.get("customer_responded"):
+    # Guardrail: VA may only send estimate after customer has responded (bypass with force_send)
+    if not lead.get("customer_responded") and not body.force_send:
         raise HTTPException(
             status_code=403,
             detail="Cannot send estimate before customer has responded"
         )
 
+    tiers = (estimate.get("inputs") or {}).get("_tiers") or {}
+    signature_price = float(tiers.get("signature") or estimate["estimate_low"])
+
     now = datetime.now(timezone.utc).isoformat()
     db.table("estimates").update({
         "status": "approved",
         "approved_at": now,
+        "estimate_low": signature_price,
+        "estimate_high": signature_price,
+        "owner_notes": "All 3 packages sent" + (" (force-sent without customer reply)" if body.force_send and not lead.get("customer_responded") else ""),
     }).eq("id", estimate_id).execute()
 
     db.table("leads").update({"status": "approved"}).eq("id", estimate["lead_id"]).execute()
 
+    # Generate proposal token and store in proposals table
+    settings = get_settings()
+    token = secrets.token_urlsafe(12)
+    proposal_url = f"{settings.proposal_base_url}/proposal/{token}"
+    try:
+        db.table("proposals").insert({
+            "token": token,
+            "estimate_id": estimate_id,
+            "lead_id": estimate["lead_id"],
+            "status": "sent",
+        }).execute()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to create proposal row: {e}")
+
     contact_id = lead.get("ghl_contact_id")
     if contact_id:
         msg = format_estimate_for_client(estimate, estimate["service_type"])
+        msg += f"\n\nView your packages and book your appointment:\n{proposal_url}"
         sent = send_message_to_contact(contact_id, msg)
         if sent:
             db.table("leads").update({"status": "sent"}).eq("id", estimate["lead_id"]).execute()
+            essential = float(tiers.get("essential") or 0)
+            legacy    = float(tiers.get("legacy") or 0)
             add_contact_note(contact_id, (
-                f"[ATSystem] Estimate sent: ${estimate['estimate_low']:,.0f}-${estimate['estimate_high']:,.0f}\n"
+                f"[ATSystem] All packages sent\n"
+                f"Essential: ${essential:,.0f} | Signature: ${signature_price:,.0f} | Legacy: ${legacy:,.0f}\n"
                 f"Service: {estimate['service_type'].replace('_', ' ').title()}\n"
-                f"Status: Approved"
+                f"Proposal link: {proposal_url}"
             ))
 
-    return {"status": "approved", "estimate_id": estimate_id}
+    return {"status": "approved", "estimate_id": estimate_id, "proposal_token": token, "proposal_url": proposal_url}
 
 
 @router.put("/{estimate_id}")
@@ -140,8 +166,39 @@ async def reject_estimate(estimate_id: str, body: EstimateReject):
     return {"status": "rejected", "estimate_id": estimate_id}
 
 
+@router.post("/{estimate_id}/preview")
+async def get_preview_token(estimate_id: str):
+    """Create (or return existing) a preview proposal so VA can see the page before sending."""
+    db = get_db()
+    res = db.table("estimates").select("*").eq("id", estimate_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    estimate = res.data
+
+    # Return existing preview token if one already exists
+    existing = db.table("proposals").select("token").eq("estimate_id", estimate_id).eq("status", "preview").execute()
+    if existing.data:
+        return {"token": existing.data[0]["token"]}
+
+    token = secrets.token_urlsafe(12)
+    db.table("proposals").insert({
+        "token": token,
+        "estimate_id": estimate_id,
+        "lead_id": estimate["lead_id"],
+        "status": "preview",
+    }).execute()
+    return {"token": token}
+
+
 @router.post("/{estimate_id}/additional-services-sent")
 async def mark_additional_services_sent(estimate_id: str):
     db = get_db()
     db.table("estimates").update({"additional_services_sent": True}).eq("id", estimate_id).execute()
+    return {"status": "updated"}
+
+
+@router.delete("/{estimate_id}/additional-services-sent")
+async def unmark_additional_services_sent(estimate_id: str):
+    db = get_db()
+    db.table("estimates").update({"additional_services_sent": False}).eq("id", estimate_id).execute()
     return {"status": "updated"}
