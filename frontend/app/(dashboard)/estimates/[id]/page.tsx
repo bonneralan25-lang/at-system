@@ -59,6 +59,22 @@ function formatMonthly(val: number) {
   return val > 0 ? `$${(val / 21).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo` : "";
 }
 
+function parseTiers(inputs: EstimateDetail["inputs"] | undefined): Record<string, number> {
+  const maybeInputs = inputs as Record<string, unknown> | undefined;
+  const rawTiers = maybeInputs?._tiers;
+  if (!rawTiers || typeof rawTiers !== "object" || Array.isArray(rawTiers)) {
+    return {};
+  }
+
+  const parsed: Record<string, number> = {};
+  for (const [key, value] of Object.entries(rawTiers as Record<string, unknown>)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      parsed[key] = value;
+    }
+  }
+  return parsed;
+}
+
 export default function EstimateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -73,7 +89,7 @@ export default function EstimateDetailPage() {
   useEffect(() => {
     api.getEstimate(id).then((e) => {
       setEstimate(e);
-      const t = (e.inputs?._tiers as Record<string, number>) || {};
+      const t = parseTiers(e.inputs);
       setAdjustPrice(String(t.signature || e.estimate_low));
       setLoading(false);
     }).catch(console.error);
@@ -142,7 +158,7 @@ export default function EstimateDetailPage() {
   const zone = (inputs._zone as string) || "";
   const priority = (inputs._priority as string) || "";
   const sqft = (inputs._sqft as number) || 0;
-  const tiers = (inputs._tiers as Record<string, number>) || {};
+  const tiers = parseTiers(estimate.inputs);
 
   // Only show user-facing form fields (skip underscore meta keys)
   const formFields = Object.entries(inputs).filter(([k]) => !k.startsWith("_"));
@@ -211,9 +227,9 @@ export default function EstimateDetailPage() {
           <CardContent>
             <div className="grid grid-cols-3 gap-3">
               {([
-                { key: "essential", label: "Essential" },
+                { key: "essential", label: "Essential", highlight: false },
                 { key: "signature", label: "Signature ★", highlight: true },
-                { key: "legacy", label: "Legacy" },
+                { key: "legacy", label: "Legacy", highlight: false },
               ] as const).map(({ key, label, highlight }) => (
                 <div
                   key={key}

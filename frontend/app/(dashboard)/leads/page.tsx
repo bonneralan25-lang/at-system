@@ -515,6 +515,9 @@ export default function LeadsPage() {
                         const est = estimateMap.get(lead.id);
                         const reason = est?.inputs?._approval_reason as string | undefined;
                         const isOwnerLead = col.key === "red";
+                        const leadAddress = typeof lead.address === "string" ? lead.address : "";
+                        const leadFormData = (lead.form_data || {}) as Record<string, unknown>;
+                        const needsAddressConfirmation = Boolean(leadFormData.address_autocompleted) && !Boolean(leadFormData.address_confirmed);
 
                         return (
                           <DraggableKanbanCard key={lead.id} leadId={lead.id}>
@@ -552,12 +555,12 @@ export default function LeadsPage() {
                             </div>
 
                             {/* Address */}
-                            {lead.address && (
-                              <p className="text-xs text-muted-foreground truncate">{lead.address}</p>
+                            {leadAddress && (
+                              <p className="text-xs text-muted-foreground truncate">{leadAddress}</p>
                             )}
 
                             {/* Unconfirmed address badge */}
-                            {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && (
+                            {needsAddressConfirmation && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700 border border-amber-200 font-medium">
                                 ⚠ Confirm address
                               </span>
@@ -655,13 +658,20 @@ export default function LeadsPage() {
               const kanbanStatus = getKanbanStatus(lead, estimateMap);
               const est = estimateMap.get(lead.id);
               const reason = est?.inputs?._approval_reason as string | undefined;
-              const isHot = lead.priority === "HOT";
+              const leadPriority = typeof lead.priority === "string" ? lead.priority : "MEDIUM";
+              const leadName = typeof lead.contact_name === "string" ? lead.contact_name : "";
+              const leadAddress = typeof lead.address === "string" ? lead.address : "";
+              const leadStatus = typeof lead.status === "string" ? lead.status : "";
+              const customerResponded = Boolean(lead.customer_responded);
+              const leadFormData = (lead.form_data || {}) as Record<string, unknown>;
+              const needsAddressConfirmation = Boolean(leadFormData.address_autocompleted) && !Boolean(leadFormData.address_confirmed);
+              const isHot = leadPriority === "HOT";
               const isOwner = kanbanStatus === "red";
               const canApprove = (kanbanStatus === "green" || kanbanStatus === "yellow")
-                && lead.customer_responded
+                && customerResponded
                 && est?.status === "pending"
-                && lead.status !== "sent";
-              const alreadySent = lead.status === "sent" || est?.status === "approved";
+                && leadStatus !== "sent";
+              const alreadySent = leadStatus === "sent" || est?.status === "approved";
 
               return (
                 <div
@@ -678,19 +688,19 @@ export default function LeadsPage() {
                   )}
                   {/* Priority */}
                   <span className={`shrink-0 inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                    priorityColors[lead.priority] || priorityColors.MEDIUM
+                    priorityColors[leadPriority] || priorityColors.MEDIUM
                   }`}>
-                    {lead.priority}
+                    {leadPriority}
                   </span>
 
                   {/* Name + address */}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{lead.contact_name || "—"}</p>
-                    <p className="text-xs text-muted-foreground truncate">{lead.address || "No address"}</p>
+                    <p className="text-sm font-medium truncate">{leadName || "—"}</p>
+                    <p className="text-xs text-muted-foreground truncate">{leadAddress || "No address"}</p>
                   </div>
 
                   {/* Unconfirmed address badge */}
-                  {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && (
+                  {needsAddressConfirmation && (
                     <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700 border border-amber-200 font-medium">
                       ⚠ Confirm address
                     </span>
@@ -721,9 +731,9 @@ export default function LeadsPage() {
 
                   {/* Customer responded indicator */}
                   {lead.customer_responded ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" title="Customer responded" />
+                    <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
                   ) : (
-                    <Circle className="h-4 w-4 text-gray-300 shrink-0" title="No response yet" />
+                    <Circle className="h-4 w-4 text-gray-300 shrink-0" />
                   )}
 
                   {/* Actions */}

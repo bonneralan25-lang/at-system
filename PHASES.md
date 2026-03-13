@@ -77,6 +77,8 @@ Work through this checklist during/after the client meeting.
    psql $DATABASE_URL -f supabase/migrations/005_add_messages_table.sql
    psql $DATABASE_URL -f supabase/migrations/006_add_proposals_table.sql
    psql $DATABASE_URL -f supabase/migrations/012_add_users_table.sql
+   psql $DATABASE_URL -f supabase/migrations/013_proposals_follow_up.sql
+   psql $DATABASE_URL -f supabase/migrations/014_leads_ghl_opportunity_id.sql
    ```
 5. [ ] **Seed users**
    ```bash
@@ -125,12 +127,12 @@ Test each flow end-to-end in production.
 
 These are the most impactful improvements after the system is live.
 
-- [ ] **Adjust & Send creates proposal page** — Currently broken funnel. VA uses Adjust & Send but no proposal is created.
-- [ ] **Settings pricing actually affects estimator** — Currently settings values are saved but `estimator.py` uses hardcoded rates. Wire DB pricing into estimator.
-- [ ] **Stripe session tied to proposal** — Security fix: verify `proposal_id` in Stripe metadata before confirming booking.
-- [ ] **Stage-based follow-up SMS** — Cron job: 2hr follow-up if customer viewed but didn't pick tier; 4hr if picked tier but didn't book.
-- [ ] **GHL pipeline stage update on booking** — Move opportunity to "Booked" stage when customer books.
-- [ ] **Resend domain verification** — Verify `atpressurewash.com` in Resend for customer confirmation emails.
+- [x] **Adjust & Send creates proposal page** — Fixed: `adjust_estimate` now creates proposal token, sends booking link via GHL SMS — DONE
+- [x] **Settings pricing actually affects estimator** — Fixed: `calculate_fence_staining` reads `tier_rates` + `size_surcharge_rate` from DB config; settings UI updated to match actual tier-rate structure — DONE
+- [x] **Stripe session tied to proposal** — Fixed: `metadata={"proposal_token": token}` added to Stripe session; verified on book — DONE
+- [x] **Stage-based follow-up SMS** — Done: `poll_proposal_follow_ups` background loop sends follow-up 2hr after "viewed"; migration 013 adds `follow_up_sent_at` — DONE
+- [x] **GHL pipeline stage update on booking** — Done: migration 014 adds `ghl_opportunity_id` to leads; pipeline sync stores it; `update_opportunity_stage()` called on booking if `GHL_BOOKED_STAGE_ID` env var is set — DONE
+- [ ] **Resend domain verification** — Verify `atpressurewash.com` in Resend dashboard (non-code task)
 
 ---
 

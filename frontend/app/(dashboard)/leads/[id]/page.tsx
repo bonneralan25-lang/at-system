@@ -342,6 +342,9 @@ export default function LeadDetailPage() {
 
   const inboundMessages = messages.filter((m) => m.direction === "inbound");
   const customerRespondedFromMessages = inboundMessages.length > 0;
+  const addressAutocompleted = Boolean(lead.form_data?.address_autocompleted);
+  const addressConfirmedInForm = Boolean(lead.form_data?.address_confirmed);
+  const hasOriginalAddress = Boolean(lead.form_data?.original_address);
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -358,12 +361,12 @@ export default function LeadDetailPage() {
       </div>
 
       {/* Address Autocomplete Warning Banner */}
-      {lead.form_data?.address_autocompleted && !lead.form_data?.address_confirmed && !addressConfirmed && (
+      {addressAutocompleted && !addressConfirmedInForm && !addressConfirmed && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-4 flex items-start gap-3">
           <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
           <div className="flex-1 space-y-1 min-w-0">
             <p className="text-sm font-semibold text-amber-800">Address was auto-completed — please confirm with the customer</p>
-            {lead.form_data?.original_address && (
+            {hasOriginalAddress && (
               <p className="text-xs text-amber-700">
                 <span className="font-medium">Customer entered:</span> {String(lead.form_data.original_address)}
               </p>
