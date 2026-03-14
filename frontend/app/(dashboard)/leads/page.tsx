@@ -6,7 +6,7 @@ import { api, type Lead, type Estimate } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, CheckCircle2, Circle, RefreshCw, Flame, LayoutGrid, List, Send, Sparkles } from "lucide-react";
+import { Search, CheckCircle2, Circle, Flame, LayoutGrid, List, Send, Sparkles } from "lucide-react";
 import {
   DndContext,
   type DragEndEvent,
@@ -205,7 +205,6 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [estimateMap, setEstimateMap] = useState<Map<string, Estimate>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"kanban" | "queue">("kanban");
@@ -221,10 +220,15 @@ export default function LeadsPage() {
   );
 
   const loadData = useCallback(async () => {
-    const [leadsData, estimatesData] = await Promise.all([
-      api.getLeads("limit=200"),
-      api.getEstimates("limit=200"),
-    ]);
+    let leadsData: Lead[], estimatesData: Estimate[];
+    try {
+      [leadsData, estimatesData] = await Promise.all([
+        api.getLeads("limit=200"),
+        api.getEstimates("limit=200"),
+      ]);
+    } catch {
+      return; // silently skip on error — next poll will retry
+    }
     setLeads(leadsData);
     const map = new Map<string, Estimate>();
     for (const est of estimatesData) {
@@ -270,11 +274,11 @@ export default function LeadsPage() {
       .catch(console.error)
       .finally(() => setLoading(false));
 
-    // Auto-refresh every 5 minutes
+    // Auto-refresh every 60 seconds — picks up new leads synced from GHL by the backend poller
     const interval = setInterval(() => {
-      loadData().catch(console.error);
-      api.getSyncStatus().then((s) => setLastSyncAt(s.last_sync_at)).catch(console.error);
-    }, 5 * 60 * 1000);
+      loadData();
+      api.getSyncStatus().then((s) => setLastSyncAt(s.last_sync_at)).catch(() => {});
+    }, 60 * 1000);
 
     // Reload when tab becomes visible again (e.g. after editing a lead detail page)
     const handleVisibilityChange = () => {
@@ -301,20 +305,6 @@ export default function LeadsPage() {
       localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString());
     };
   }, []);
-
-  const handleSyncNow = async () => {
-    setSyncing(true);
-    try {
-      await api.syncPipeline();
-      await loadData();
-      const s = await api.getSyncStatus();
-      setLastSyncAt(s.last_sync_at);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   const handleDismissNewBanner = () => {
     setNewBannerDismissed(true);
@@ -406,28 +396,16 @@ export default function LeadsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Leads</h1>
-          <p className="text-muted-foreground">
-            {leads.length} total
-            {lastSyncAt && (
-              <span className="ml-2 text-xs">
-                · Last synced {formatDate(lastSyncAt)}
-              </span>
-            )}
-          </p>
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleSyncNow}
-          disabled={syncing}
-          className="shrink-0 mt-1"
-        >
-          <RefreshCw className={`h-4 w-4 mr-1.5 ${syncing ? "animate-spin" : ""}`} />
-          {syncing ? "Syncing…" : "Sync Now"}
-        </Button>
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Leads</h1>
+        <p className="text-muted-foreground">
+          {leads.length} total
+          {lastSyncAt && (
+            <span className="ml-2 text-xs">
+              · Last synced {formatDate(lastSyncAt)}
+            </span>
+          )}
+        </p>
       </div>
 
       {/* HOT Leads Banner */}
