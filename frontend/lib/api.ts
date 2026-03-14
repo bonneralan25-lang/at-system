@@ -38,19 +38,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   // Auth
-  login: (email: string, password: string) =>
-    request<{ token: string; user: { email: string; name: string; role: string } }>(
+  login: (username: string, password: string) =>
+    request<{ token: string; user: { username: string; name: string; role: string } }>(
       "/api/auth/login",
-      { method: "POST", body: JSON.stringify({ email, password }) }
+      { method: "POST", body: JSON.stringify({ username, password }) }
     ),
 
-  register: (email: string, name: string, password: string) =>
-    request<{ status: string }>(
-      "/api/auth/register",
-      { method: "POST", body: JSON.stringify({ email, name, password }) }
-    ),
 
-    // Leads
+  // Leads
   getLeads: (params?: string) =>
     request<Lead[]>(`/api/leads${params ? `?${params}` : ""}`),
   getLead: (id: string) => request<LeadDetail>(`/api/leads/${id}`),

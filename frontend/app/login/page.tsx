@@ -7,7 +7,7 @@ import { Droplets } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -17,8 +17,7 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const { token } = await api.login(email, password);
-      // Store token in cookie (7 days)
+      const { token } = await api.login(username, password);
       document.cookie = `at_auth=${encodeURIComponent(token)}; path=/; max-age=604800; SameSite=Lax`;
       router.push("/");
     } catch (err: unknown) {
@@ -34,7 +33,6 @@ export default function LoginPage() {
       style={{ background: "#0f172a" }}
     >
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="flex items-center gap-3 mb-8 justify-center">
           <div
             className="h-10 w-10 rounded-xl flex items-center justify-center"
@@ -43,21 +41,20 @@ export default function LoginPage() {
             <Droplets className="h-5 w-5 text-white" />
           </div>
           <div>
-            <p className="font-bold text-white text-base leading-none">A&T's Pressure</p>
+            <p className="font-bold text-white text-base leading-none">A&T&apos;s Pressure</p>
             <p className="text-xs mt-0.5" style={{ color: "#8ed1fc" }}>
               Washing Dashboard
             </p>
           </div>
         </div>
 
-        {/* Card */}
         <div
           className="rounded-2xl p-8"
           style={{ background: "#1e293b", border: "1px solid rgba(255,255,255,0.08)" }}
         >
           <h1 className="text-xl font-bold text-white mb-1">Sign in</h1>
           <p className="text-sm mb-6" style={{ color: "#94a3b8" }}>
-            Enter your email and password to continue.
+            Enter your username and password to continue.
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -66,13 +63,13 @@ export default function LoginPage() {
                 className="block text-sm font-medium mb-1.5"
                 style={{ color: "#cbd5e1" }}
               >
-                Email
+                Username
               </label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
                 autoFocus
                 required
                 className="w-full rounded-lg px-4 py-2.5 text-sm outline-none transition-colors"
@@ -81,12 +78,8 @@ export default function LoginPage() {
                   border: "1px solid rgba(255,255,255,0.12)",
                   color: "#f1f5f9",
                 }}
-                onFocus={(e) =>
-                  (e.currentTarget.style.borderColor = "#0693e3")
-                }
-                onBlur={(e) =>
-                  (e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)")
-                }
+                onFocus={(e) => (e.currentTarget.style.borderColor = "#0693e3")}
+                onBlur={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)")}
               />
             </div>
 
@@ -109,12 +102,8 @@ export default function LoginPage() {
                   border: "1px solid rgba(255,255,255,0.12)",
                   color: "#f1f5f9",
                 }}
-                onFocus={(e) =>
-                  (e.currentTarget.style.borderColor = "#0693e3")
-                }
-                onBlur={(e) =>
-                  (e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)")
-                }
+                onFocus={(e) => (e.currentTarget.style.borderColor = "#0693e3")}
+                onBlur={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)")}
               />
             </div>
 
@@ -140,13 +129,6 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
-
-          <p className="text-center text-sm mt-5" style={{ color: "#64748b" }}>
-            Don&apos;t have an account?{" "}
-            <a href="/register" style={{ color: "#0693e3" }}>
-              Create one
-            </a>
-          </p>
         </div>
       </div>
     </div>

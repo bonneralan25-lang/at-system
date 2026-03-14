@@ -16,20 +16,14 @@ TOKEN_EXPIRE_DAYS = 7
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class RegisterRequest(BaseModel):
-    email: str
-    name: str
+    username: str
     password: str
 
 
 def make_token(user: dict) -> str:
     settings = get_settings()
     payload = {
-        "sub": user["email"],
+        "sub": user["username"],
         "name": user["display_name"],
         "role": user["role"],
         "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_EXPIRE_DAYS),
@@ -57,7 +51,7 @@ def require_admin(user: dict = Depends(get_current_user)):
 @router.post("/login")
 async def login(body: LoginRequest):
     db = get_db()
-    result = db.table("users").select("*").eq("email", body.email).execute()
+    result = db.table("users").select("*").eq("username", body.username).execute()
     user = (result.data or [None])[0]
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -66,27 +60,11 @@ async def login(body: LoginRequest):
     return {
         "token": make_token(user),
         "user": {
-            "email": user["email"],
+            "username": user["username"],
             "name": user["display_name"],
             "role": user["role"],
         },
     }
-
-
-@router.post("/register")
-async def register(body: RegisterRequest):
-    db = get_db()
-    existing = db.table("users").select("id").eq("email", body.email).execute()
-    if existing.data:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    pw_hash = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
-    db.table("users").insert({
-        "email": body.email,
-        "display_name": body.name,
-        "password_hash": pw_hash,
-        "role": "va",  # all self-registered users start as VA; promote to admin via DB
-    }).execute()
-    return {"status": "ok"}
 
 
 @router.get("/me")
