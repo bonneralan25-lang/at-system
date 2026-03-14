@@ -46,23 +46,34 @@ const serviceLabel: Record<string, string> = {
   pressure_washing: "Pressure Washing",
 };
 
+const CACHE_KEY = "at_dashboard_cache";
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [pendingEstimates, setPendingEstimates] = useState<Estimate[]>([]);
-  const [hotCount, setHotCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Show cached data immediately
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        const { stats: s, estimates: e } = JSON.parse(cached);
+        setStats(s);
+        setPendingEstimates(e);
+        setLoading(false);
+      }
+    } catch { /* ignore */ }
+
+    // Fetch fresh data
     Promise.all([
       api.getStats().catch(() => null),
       api.getEstimates("status=pending&limit=5").catch(() => []),
-      api.getLeads("limit=200").catch(() => []),
-    ]).then(([s, e, l]) => {
+    ]).then(([s, e]) => {
       setStats(s as DashboardStats);
       setPendingEstimates(e as Estimate[]);
-      const leads = l as { priority: string; status: string }[];
-      setHotCount(leads.filter((lead) => lead.priority === "HOT" && lead.status !== "sent" && lead.status !== "approved").length);
       setLoading(false);
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ stats: s, estimates: e })); } catch { /* ignore */ }
     });
   }, []);
 
@@ -74,11 +85,11 @@ export default function DashboardPage() {
       </div>
 
       {/* HOT Leads Banner */}
-      {!loading && hotCount > 0 && (
+      {!loading && (stats?.hot_leads ?? 0) > 0 && (
         <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-orange-50 border border-orange-200 text-orange-800 text-sm font-medium">
           <Flame className="h-4 w-4 text-orange-500 shrink-0" />
           <span>
-            {hotCount} urgent lead{hotCount > 1 ? "s" : ""} — ASAP / This week — need immediate attention
+            {stats!.hot_leads} urgent lead{stats!.hot_leads > 1 ? "s" : ""} — ASAP / This week — need immediate attention
           </span>
           <Link href="/leads" className="ml-auto text-xs underline underline-offset-2 hover:no-underline">
             Go to Leads →

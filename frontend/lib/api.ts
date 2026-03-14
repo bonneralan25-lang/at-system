@@ -268,6 +268,7 @@ export interface DashboardStats {
   leads_this_week: number;
   approved_this_month: number;
   revenue_estimate_this_month: number;
+  hot_leads: number;
 }
 
 export interface SyncResult {

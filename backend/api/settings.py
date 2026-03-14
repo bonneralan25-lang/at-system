@@ -68,6 +68,14 @@ async def get_stats():
         .gte("approved_at", month_start)
         .execute()
     )
+    hot_leads = (
+        db.table("leads")
+        .select("id", count="exact")
+        .eq("priority", "HOT")
+        .eq("archived", False)
+        .not_in("status", ["sent", "approved"])
+        .execute()
+    )
 
     revenue = sum(r.get("estimate_low", 0) for r in (approved_month.data or []))
 
@@ -76,4 +84,5 @@ async def get_stats():
         "leads_this_week": leads_week.count or 0,
         "approved_this_month": approved_month.count or 0,
         "revenue_estimate_this_month": revenue,
+        "hot_leads": hot_leads.count or 0,
     }

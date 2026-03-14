@@ -22,6 +22,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 const LAST_VISIT_KEY = "atSystemLastVisitAt";
+const LEADS_CACHE_KEY = "at_leads_cache";
+const ESTIMATES_CACHE_KEY = "at_estimates_cache";
 
 type KanbanStatus = "gray" | "no_address" | "needs_info" | "green" | "yellow" | "red" | "follow_up" | "sent";
 
@@ -230,6 +232,12 @@ export default function LeadsPage() {
     }
     setEstimateMap(map);
 
+    // Cache for instant next visit
+    try {
+      localStorage.setItem(LEADS_CACHE_KEY, JSON.stringify(leadsData));
+      localStorage.setItem(ESTIMATES_CACHE_KEY, JSON.stringify(estimatesData));
+    } catch { /* ignore */ }
+
     // "New Lead" logic — compare against last visit timestamp
     const lastVisit = localStorage.getItem(LAST_VISIT_KEY);
     if (lastVisit) {
@@ -240,6 +248,23 @@ export default function LeadsPage() {
   }, []);
 
   useEffect(() => {
+    // Show cached data immediately for instant load
+    try {
+      const cachedLeads = localStorage.getItem(LEADS_CACHE_KEY);
+      const cachedEstimates = localStorage.getItem(ESTIMATES_CACHE_KEY);
+      if (cachedLeads && cachedEstimates) {
+        const leads = JSON.parse(cachedLeads) as Lead[];
+        const estimates = JSON.parse(cachedEstimates) as Estimate[];
+        setLeads(leads);
+        const map = new Map<string, Estimate>();
+        for (const est of estimates) {
+          if (!map.has(est.lead_id)) map.set(est.lead_id, est);
+        }
+        setEstimateMap(map);
+        setLoading(false);
+      }
+    } catch { /* ignore */ }
+
     Promise.all([loadData(), api.getSyncStatus()])
       .then(([, syncStatus]) => setLastSyncAt(syncStatus.last_sync_at))
       .catch(console.error)

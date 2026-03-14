@@ -60,6 +60,7 @@ class QueryBuilder:
         self._upsert_data: dict | None = None
         self._upsert_conflict: str | None = None
         self._in_filters: list[tuple[str, list]] = []
+        self._not_in_filters: list[tuple[str, list]] = []
         self._gte_filters: list[tuple[str, str]] = []
         self._not_is_filters: list[tuple[str, str]] = []
 
@@ -97,6 +98,10 @@ class QueryBuilder:
 
     def in_(self, col: str, vals: list) -> QueryBuilder:
         self._in_filters.append((col, vals))
+        return self
+
+    def not_in(self, col: str, vals: list) -> QueryBuilder:
+        self._not_in_filters.append((col, vals))
         return self
 
     def gte(self, col: str, val: str) -> QueryBuilder:
@@ -147,6 +152,10 @@ class QueryBuilder:
         for col, vals in self._in_filters:
             placeholders = ", ".join(["%s"] * len(vals))
             parts.append(f"{col} IN ({placeholders})")
+            params.extend(vals)
+        for col, vals in self._not_in_filters:
+            placeholders = ", ".join(["%s"] * len(vals))
+            parts.append(f"{col} NOT IN ({placeholders})")
             params.extend(vals)
         for col, val in self._gte_filters:
             parts.append(f"{col} >= %s")
