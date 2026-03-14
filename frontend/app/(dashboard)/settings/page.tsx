@@ -161,8 +161,26 @@ export default function SettingsPage() {
   useEffect(() => {
     api.getPricing().then((configs) => {
       for (const c of configs) {
-        if (c.service_type === "fence_staining") setFenceConfig(c.config as FenceConfig);
-        if (c.service_type === "pressure_washing") setPressureConfig(c.config as PressureConfig);
+        if (c.service_type === "fence_staining") {
+          const fetched = c.config as FenceConfig;
+          setFenceConfig({
+            ...defaultFenceConfig,
+            ...fetched,
+            tier_rates: {
+              ...defaultFenceConfig.tier_rates,
+              ...(fetched.tier_rates || {}),
+            },
+          });
+        }
+        if (c.service_type === "pressure_washing") {
+          const fetched = c.config as PressureConfig;
+          setPressureConfig({
+            ...defaultPressureConfig,
+            ...fetched,
+            surface_factors: { ...defaultPressureConfig.surface_factors, ...(fetched.surface_factors || {}) },
+            condition_factors: { ...defaultPressureConfig.condition_factors, ...(fetched.condition_factors || {}) },
+          });
+        }
       }
     }).catch(() => {});
   }, []);
