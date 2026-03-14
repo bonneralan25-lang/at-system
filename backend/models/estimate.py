@@ -53,3 +53,11 @@ class EstimateReject(BaseModel):
 class EstimateApprove(BaseModel):
     selected_tier: str = "signature"
     force_send: bool = False  # bypass the customer-responded guardrail
+
+
+class AdminApproveRequest(BaseModel):
+    essential: float | None = None
+    signature: float | None = None
+    legacy: float | None = None
+    notes: str | None = None
+    force_send: bool = False

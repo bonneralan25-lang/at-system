@@ -106,6 +106,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ estimate_low: low, estimate_high: high, owner_notes: notes }),
     }),
+  adminApproveEstimate: (id: string, body: { essential?: number; signature?: number; legacy?: number; notes?: string; force_send?: boolean }) =>
+    request<{ status: string; proposal_url: string }>(`/api/estimates/${id}/admin-approve`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   getPreviewToken: (estimateId: string) =>
     request<{ token: string }>(`/api/estimates/${estimateId}/preview`, { method: "POST" }),
   markAdditionalServicesSent: (estimateId: string) =>

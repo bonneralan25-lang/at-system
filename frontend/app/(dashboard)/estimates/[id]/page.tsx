@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, type EstimateDetail } from "@/lib/api";
+import { api, type EstimateDetail, getCurrentUser } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -147,6 +147,7 @@ export default function EstimateDetailPage() {
   if (!estimate) return <p className="text-muted-foreground">Estimate not found.</p>;
 
   const isPending = estimate.status === "pending";
+  const isAdmin = getCurrentUser()?.role === "admin";
   const mapsLink = estimate.lead?.address
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(estimate.lead.address)}`
     : null;
@@ -328,8 +329,18 @@ export default function EstimateDetailPage() {
         </Card>
       </div>
 
-      {/* Approval Actions (only for pending) */}
-      {isPending && (
+      {/* VA info banner when pending and not admin */}
+      {isPending && !isAdmin && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="py-4">
+            <p className="text-sm text-blue-700 font-medium">Estimate ready for admin review</p>
+            <p className="text-xs text-blue-600 mt-0.5">Alan or Thomas will review and send this estimate from the Admin Approval queue.</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Approval Actions (admin-only, pending estimates) */}
+      {isPending && isAdmin && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Owner Action</CardTitle>

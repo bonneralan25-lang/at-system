@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import secrets
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from datetime import datetime, timezone
 
 from db import get_db
 from config import get_settings
-from models.estimate import EstimateAdjust, EstimateApprove, EstimateReject
+from models.estimate import AdminApproveRequest, EstimateAdjust, EstimateApprove, EstimateReject
 from services.ghl import send_message_to_contact, format_estimate_for_client, add_contact_note
+from api.auth import require_admin
 
 router = APIRouter(prefix="/api/estimates", tags=["estimates"])
 
@@ -45,7 +46,7 @@ async def get_estimate(estimate_id: str):
 
 
 @router.post("/{estimate_id}/approve")
-async def approve_estimate(estimate_id: str, body: EstimateApprove = EstimateApprove()):
+async def approve_estimate(estimate_id: str, body: EstimateApprove = EstimateApprove(), _: dict = Depends(require_admin)):
     db = get_db()
     res = db.table("estimates").select("*, lead:leads(*)").eq("id", estimate_id).single().execute()
     if not res.data:
@@ -109,8 +110,84 @@ async def approve_estimate(estimate_id: str, body: EstimateApprove = EstimateApp
     return {"status": "approved", "estimate_id": estimate_id, "proposal_token": token, "proposal_url": proposal_url}
 
 
+@router.post("/{estimate_id}/admin-approve")
+async def admin_approve_estimate(estimate_id: str, body: AdminApproveRequest, _: dict = Depends(require_admin)):
+    """Admin-only: approve with optional custom tier price overrides for all 3 packages."""
+    db = get_db()
+    res = db.table("estimates").select("*, lead:leads(*)").eq("id", estimate_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+
+    estimate = res.data
+    lead = estimate.get("lead") or {}
+
+    if not lead.get("customer_responded") and not body.force_send:
+        raise HTTPException(status_code=403, detail="Cannot send estimate before customer has responded")
+
+    # Apply optional admin overrides to tiers
+    inputs = dict(estimate.get("inputs") or {})
+    tiers = dict(inputs.get("_tiers") or {})
+    if body.essential is not None:
+        tiers["essential"] = body.essential
+    if body.signature is not None:
+        tiers["signature"] = body.signature
+    if body.legacy is not None:
+        tiers["legacy"] = body.legacy
+    inputs["_tiers"] = tiers
+
+    signature_price = float(tiers.get("signature") or estimate["estimate_low"])
+    essential_price = float(tiers.get("essential") or 0)
+    legacy_price = float(tiers.get("legacy") or 0)
+
+    now = datetime.now(timezone.utc).isoformat()
+    owner_notes = body.notes or "All 3 packages sent"
+    if body.force_send and not lead.get("customer_responded"):
+        owner_notes += " (force-sent without customer reply)"
+
+    db.table("estimates").update({
+        "status": "approved",
+        "approved_at": now,
+        "estimate_low": signature_price,
+        "estimate_high": signature_price,
+        "owner_notes": owner_notes,
+        "inputs": inputs,
+    }).eq("id", estimate_id).execute()
+
+    db.table("leads").update({"status": "approved"}).eq("id", estimate["lead_id"]).execute()
+
+    settings = get_settings()
+    token = secrets.token_urlsafe(12)
+    proposal_url = f"{settings.proposal_base_url}/proposal/{token}"
+    try:
+        db.table("proposals").insert({
+            "token": token,
+            "estimate_id": estimate_id,
+            "lead_id": estimate["lead_id"],
+            "status": "sent",
+        }).execute()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to create proposal row: {e}")
+
+    contact_id = lead.get("ghl_contact_id")
+    if contact_id:
+        msg = format_estimate_for_client({**estimate, "inputs": inputs}, estimate["service_type"])
+        msg += f"\n\nView your packages and book your appointment:\n{proposal_url}"
+        sent = send_message_to_contact(contact_id, msg)
+        if sent:
+            db.table("leads").update({"status": "sent"}).eq("id", estimate["lead_id"]).execute()
+            add_contact_note(contact_id, (
+                f"[ATSystem] All packages sent\n"
+                f"Essential: ${essential_price:,.0f} | Signature: ${signature_price:,.0f} | Legacy: ${legacy_price:,.0f}\n"
+                f"Service: {estimate['service_type'].replace('_', ' ').title()}\n"
+                f"Proposal link: {proposal_url}"
+            ))
+
+    return {"status": "approved", "estimate_id": estimate_id, "proposal_token": token, "proposal_url": proposal_url}
+
+
 @router.put("/{estimate_id}")
-async def adjust_estimate(estimate_id: str, body: EstimateAdjust):
+async def adjust_estimate(estimate_id: str, body: EstimateAdjust, _: dict = Depends(require_admin)):
     db = get_db()
     res = db.table("estimates").select("*").eq("id", estimate_id).single().execute()
     if not res.data:
@@ -166,7 +243,7 @@ async def adjust_estimate(estimate_id: str, body: EstimateAdjust):
 
 
 @router.post("/{estimate_id}/reject")
-async def reject_estimate(estimate_id: str, body: EstimateReject):
+async def reject_estimate(estimate_id: str, body: EstimateReject, _: dict = Depends(require_admin)):
     db = get_db()
     res = db.table("estimates").select("*").eq("id", estimate_id).single().execute()
     if not res.data:

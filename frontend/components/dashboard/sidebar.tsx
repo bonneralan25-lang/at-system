@@ -13,11 +13,13 @@ import {
   Droplets,
   CalendarDays,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, adminOnly: false },
   { href: "/leads", label: "Leads", icon: Users, adminOnly: false },
+  { href: "/admin-approval", label: "Admin Approval", icon: ShieldCheck, adminOnly: true },
   { href: "/estimates", label: "Estimates", icon: FileText, adminOnly: false },
   { href: "/schedule", label: "Schedule", icon: CalendarDays, adminOnly: false },
   { href: "/settings", label: "Settings", icon: Settings, adminOnly: false },
